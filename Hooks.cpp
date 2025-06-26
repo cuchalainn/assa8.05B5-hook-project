@@ -54,15 +54,6 @@ void* g_pfnVbaStrCopy = nullptr;
 void* gAutoPileJumpTarget = nullptr;
 void* gCommandChainJumpTarget = nullptr;
 
-// --- GDI Hook 相關程式碼 ---
-typedef BOOL(WINAPI* PFN_TEXTOUTW)(HDC, int, int, LPCWSTR, int);
-PFN_TEXTOUTW pfnOriginalTextOutW = NULL;
-typedef BOOL(WINAPI* PFN_EXTTEXTOUTW)(HDC, int, int, UINT, const RECT*, LPCWSTR, UINT, const INT*);
-PFN_EXTTEXTOUTW pfnOriginalExtTextOutW = NULL;
-typedef int(WINAPI* PFN_DRAWTEXTW)(HDC, LPCWSTR, int, LPRECT, UINT);
-PFN_DRAWTEXTW pfnOriginalDrawTextW = NULL;
-
-
 // 用於儲存自訂set指令所需資訊的結構
 struct CustomCommandInfo {
     DWORD CheckboxOffset;
@@ -70,16 +61,15 @@ struct CustomCommandInfo {
 };
 struct CustomCommandRule {
     std::wstring keyString;
-    int minValue; // 範圍的最小值 (包含)
-    int maxValue; // 範圍的最大值 (包含)
+    int minValue;
+    int maxValue;
     CustomCommandInfo action;
 };
-
-// 輔助函式用於判斷字串是否相符
+// 輔助函式用於判斷字串是否為自訂命令
 int ShouldDoCustomJump() {
     LPCWSTR commandString = (LPCWSTR)0x4F53D1;
     if (IsBadReadPtr(commandString, sizeof(wchar_t))) {
-        return 0; // 指標無效，返回 0 (false)
+        return 0;
     }
     const wchar_t* commandsToMatch[] = {
         L"/status", L"/accompany", L"/eo", L"/offline on", L"/offline off",
@@ -87,10 +77,10 @@ int ShouldDoCustomJump() {
     };
     for (const auto& cmd : commandsToMatch) {
         if (wcscmp(commandString, cmd) == 0) {
-            return 1; // 找到相符指令，明確返回 1 (true)
+            return 1;
         }
     }
-    return 0; // 沒找到，明確返回 0 (false)
+    return 0;
 }
 
 // --- Let指令 Hook ---
@@ -495,8 +485,17 @@ void InstallCommandChainHook() {
 //  ---set2指令 Hook ---
 void ProcessStringCopyHook(LPCWSTR stringAddress) {
     if (IsBadReadPtr(stringAddress, sizeof(wchar_t))) return;
+    static const std::unordered_map<std::wstring, std::wstring> replacements = {
+        {L"決鬥", L"決斗"}, {L"自動電腦對戰", L"自動KNPC"}, {L"自動戰鬥", L"自動戰斗"},
+        {L"快速戰鬥", L"快速戰斗"}, {L"登入主機", L"登陸主機"}, {L"登入副機", L"登陸副機"},
+        {L"登入人物", L"登陸人物"}, {L"自動登入", L"自動登陸"}, {L"走動遇敵", L"功能取消"},
+        {L"走動步數", L"功能取消"}, {L"快速遇敵", L"功能取消"}, {L"快速延遲", L"功能取消"},
+        {L"自動猜謎", L"功能取消"}, {L"腳本延遲", L"腳本延時"}, {L"戰鬥補氣", L"戰斗補氣"}
+    };
+    auto it = replacements.find(stringAddress);
+    if (it != replacements.end()) {
+        OverwriteStringInMemory(stringAddress, it->second);
     }
-    // 如果不符合任何條件，函式直接結束，不執行任何操作
 }
 __declspec(naked) void MyStringCopyHook() {
     __asm {
@@ -635,7 +634,7 @@ void InstallAddEspHook() {
     *(DWORD*)(pTarget + 1) = offset;
     VirtualProtect(pTarget, 5, oldProtect, &oldProtect);
 }
-
+#pragma endregion
 // --- 公開的總安裝函式 ---
 void InstallAllHooks() {
     InstallCompareHook();
@@ -647,5 +646,4 @@ void InstallAllHooks() {
     InstallButton2Hook();
     InstallIfitemHook();
     InstallCommandChainHook();
-    InstallStringCopyHook();
 }

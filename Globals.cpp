@@ -4,7 +4,7 @@
 
 // ========== 全域變數定義 ==========
 
-// 初始化結構體
+// 初始化結構體，確保初始狀態乾淨
 TargetInfo g_assaInfo = { 0, NULL, NULL, NULL };
 TargetInfo g_saInfo = { 0, NULL, NULL, NULL };
 

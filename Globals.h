@@ -3,7 +3,7 @@
 #include <windows.h>
 #include <time.h>
 
-// 使用結構體來組織與目標行程相關的資訊
+// 使用結構體來組織與目標行程相關的資訊，讓狀態管理更清晰
 struct TargetInfo {
     DWORD PID;
     HWND  HWND;

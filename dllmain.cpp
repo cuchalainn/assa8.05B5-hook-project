@@ -5,10 +5,10 @@
 #include "Hooks.h"
 #include "helpers.h"
 
-// 需要 UIManager.h 來取得全域字型句柄，以便釋放資源
+// 需要 UIManager.h 來取得全域字型句柄，以便在卸載時釋放資源
 #include "UIManager.h"
 
-// 背景執行緒，負責執行安全的 UI 準備工作
+// 背景執行緒，負責在不阻塞主程式的情況下準備UI
 DWORD WINAPI UiPreparationThread(LPVOID lpParam) {
     // 循環等待，直到主程式的視窗建立完成
     while (GetCurrentProcessMainWindow() == NULL) {
@@ -25,7 +25,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     {
         DisableThreadLibraryCalls(hModule);
         InstallAllHooks(); // 安裝所有功能的 Hook
-        // 建立一個獨立執行緒來處理 UI 初始化，避免阻塞目標程式
+        // 建立一個獨立執行緒來處理 UI 初始化
         HANDLE hThread = CreateThread(NULL, 0, UiPreparationThread, NULL, 0, NULL);
         if (hThread) {
             CloseHandle(hThread);
