@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <functional> //【優化】為了使用 std::function
 
+
 // --- 常數定義 ---
 namespace Addr {
     // 主程式 Hook 相關偏移
@@ -99,21 +100,22 @@ void ProcessParameterHook(DWORD eax_value) {
     if (IsBadReadPtr(*pString, sizeof(wchar_t))) return;
 
     LPCWSTR finalStringAddress = *pString;
+    wchar_t buffer[64];
 
     //【優化】使用 map 將字串對應到處理邏輯，替代冗長的 if-else。
     // 使用 std::function 儲存不同的處理函式。
     static std::unordered_map<std::wstring, std::function<void(LPCWSTR)>> actionMap = {
         {L"#系統時間秒數差", [](LPCWSTR addr) {
-            SYSTEMTIME st_now, st_year_start = { 0 };
-            GetSystemTime(&st_now);
+        SYSTEMTIME st_now, st_year_start = { 0 };
+        GetSystemTime(&st_now);
             st_year_start.wYear = st_now.wYear; st_year_start.wMonth = 1; st_year_start.wDay = 1;
-            FILETIME ft_now, ft_year_start;
+        FILETIME ft_now, ft_year_start;
             SystemTimeToFileTime(&st_now, &ft_now); SystemTimeToFileTime(&st_year_start, &ft_year_start);
             ULARGE_INTEGER uli_now = {ft_now.dwLowDateTime, ft_now.dwHighDateTime};
             ULARGE_INTEGER uli_year_start = {ft_year_start.dwLowDateTime, ft_year_start.dwHighDateTime};
-            ULONGLONG totalSeconds = (uli_now.QuadPart - uli_year_start.QuadPart) / 10000000;
+        ULONGLONG totalSeconds = (uli_now.QuadPart - uli_year_start.QuadPart) / 10000000;
             wchar_t buffer[64];
-            swprintf(buffer, 64, L"%llu", totalSeconds);
+        swprintf(buffer, 64, L"%llu", totalSeconds);
             OverwriteStringInMemory(addr, buffer);
         }},
         {L"#遊戲時間", [](LPCWSTR addr) {
@@ -138,22 +140,22 @@ void ProcessParameterHook(DWORD eax_value) {
                 wchar_t buffer[64];
                 swprintf(buffer, 64, L"%u", finalId);
                 OverwriteStringInMemory(addr, buffer);
-            }
+        }
  else { OverwriteStringInMemory(addr, L"視窗未開啟"); }
 }},
 {L"#WINID", [](LPCWSTR addr) {
     if (!g_saInfo.hProcess) return;
-    DWORD windowState = 0;
+            DWORD windowState = 0;
     LPCVOID dynamicStateAddr = (LPCVOID)((BYTE*)g_saInfo.base + Addr::WindowStateOffset);
     ReadProcessMemory(g_saInfo.hProcess, dynamicStateAddr, &windowState, sizeof(windowState), NULL);
-    if (windowState == 1) {
-        DWORD finalId = 0;
+            if (windowState == 1) {
+                DWORD finalId = 0;
         LPCVOID dynamicIdAddr = (LPCVOID)((BYTE*)g_saInfo.base + Addr::WinIdOffset);
         ReadProcessMemory(g_saInfo.hProcess, dynamicIdAddr, &finalId, sizeof(finalId), NULL);
         wchar_t buffer[64];
-        swprintf(buffer, 64, L"%u", finalId);
+                swprintf(buffer, 64, L"%u", finalId);
         OverwriteStringInMemory(addr, buffer);
-    }
+            }
 else { OverwriteStringInMemory(addr, L"視窗未開啟"); }
 }},
 {L"#EV1", [](LPCWSTR addr) { wchar_t buf[16]; swprintf(buf, 16, L"%d", ev1); OverwriteStringInMemory(addr, buf); }},
@@ -161,7 +163,7 @@ else { OverwriteStringInMemory(addr, L"視窗未開啟"); }
 {L"#EV3", [](LPCWSTR addr) { wchar_t buf[16]; swprintf(buf, 16, L"%d", ev3); OverwriteStringInMemory(addr, buf); }},
 {L"#亂數", [](LPCWSTR addr) {
     static std::mt19937 gen(std::random_device{}());
-    static std::uniform_int_distribution<> distrib(0, 10);
+        static std::uniform_int_distribution<> distrib(0, 10);
     wchar_t buf[16];
     swprintf(buf, 16, L"%d", distrib(gen));
     OverwriteStringInMemory(addr, buf);
@@ -493,30 +495,8 @@ void InstallCommandChainHook() {
 //  ---set2指令 Hook ---
 void ProcessStringCopyHook(LPCWSTR stringAddress) {
     if (IsBadReadPtr(stringAddress, sizeof(wchar_t))) return;
-
-    //【優化】使用靜態 map 來進行字串替換，比 if-else 更清晰、高效、易擴展。
-    static const std::unordered_map<std::wstring, std::wstring> replacements = {
-        {L"決鬥", L"決斗"},
-        {L"自動電腦對戰", L"自動KNPC"},
-        {L"自動戰鬥", L"自動戰斗"},
-        {L"快速戰鬥", L"快速戰斗"},
-        {L"登入主機", L"登陸主機"},
-        {L"登入副機", L"登陸副機"},
-        {L"登入人物", L"登陸人物"},
-        {L"自動登入", L"自動登陸"},
-        {L"走動遇敵", L"功能取消"},
-        {L"走動步數", L"功能取消"},
-        {L"快速遇敵", L"功能取消"},
-        {L"快速延遲", L"功能取消"},
-        {L"自動猜謎", L"功能取消"},
-        {L"腳本延遲", L"腳本延時"},
-        {L"戰鬥補氣", L"戰斗補氣"}
-    };
-
-    auto it = replacements.find(stringAddress);
-    if (it != replacements.end()) {
-        OverwriteStringInMemory(stringAddress, it->second);
     }
+    // 如果不符合任何條件，函式直接結束，不執行任何操作
 }
 __declspec(naked) void MyStringCopyHook() {
     __asm {
@@ -587,6 +567,7 @@ void InstallAutoPileHook() {
 
 
 // --- 自動發話 Hook ---
+//比對:呼喚野獸、堆疊、開始遇敵
 __declspec(naked) void MyCompareHook() {
     __asm {
         pushad

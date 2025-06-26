@@ -11,6 +11,7 @@ HFONT g_hInfoBoxFont = NULL;
 // 內部使用的靜態變數
 static bool g_areButtonsCreated = false;
 static HWND g_hFastWalk = NULL;
+static HWND g_hFastWalkParent = NULL;
 static HWND g_hWallHack = NULL;
 static HWND g_hAutoRiddle = NULL;
 static HWND g_hTargetParent = NULL; // 用於存放新按鈕的父容器句柄
@@ -35,8 +36,13 @@ LRESULT CALLBACK LaunchButtonWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
     if (!pOldProc) {
         return DefWindowProcW(hwnd, uMsg, wParam, lParam);
     }
+
     if (uMsg == WM_LBUTTONUP) {
-        LRESULT result = CallWindowProcW(pOldProc, hwnd, uMsg, wParam, lParam);
+        wchar_t controlText[256] = { 0 };
+        GetWindowTextW(hwnd, controlText, 256);
+
+        if (wcscmp(controlText, L"啟動石器") == 0) {
+            LRESULT result = CallWindowProcW(pOldProc, hwnd, uMsg, wParam, lParam);
         Sleep(300); // 等待石器時代程式啟動
         // 更新目標程式資訊
         g_saInfo.PID = ReadSapid();
@@ -50,19 +56,20 @@ LRESULT CALLBACK LaunchButtonWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM
                 memset(&g_saInfo, 0, sizeof(TargetInfo));
             }
         }
-        else {
+            else {
             if (g_saInfo.hProcess) CloseHandle(g_saInfo.hProcess);
             memset(&g_saInfo, 0, sizeof(TargetInfo));
-        }
+            }
         // 如果按鈕尚未建立，則呼叫建立函式
         if (!g_areButtonsCreated) {
             CreateAllButtons();
             g_areButtonsCreated = true;
+            }
+            return result;
         }
-        return result;
-    }
     return CallWindowProcW(pOldProc, hwnd, uMsg, wParam, lParam);
-}
+        }
+    }
 
 // 掛載在主視窗上的視窗程序，用於接收自訂按鈕的點擊消息
 LRESULT CALLBACK ParentWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -104,10 +111,12 @@ void autosay(int button_id) {
         memcpy(stringAddress, clearBuffer, sizeof(clearBuffer)); // 先清空
         if (!commandBytes.empty()) {
             memcpy(stringAddress, commandBytes.data(), commandBytes.size()); // 再寫入
-        }
+    }
         VirtualProtect(stringAddress, sizeof(clearBuffer), oldProtect, &oldProtect);
     }
-}
+    else if (wcscmp(text, L"自動猜迷") == 0) { 
+        g_hAutoRiddle = hwnd;
+    }
 
 // 遍歷子視窗，修改文字並掛鉤特定按鈕
 BOOL CALLBACK FindAndHookControlsProc(HWND hwnd, LPARAM lParam) {
@@ -136,11 +145,11 @@ BOOL CALLBACK FindAndHookControlsProc(HWND hwnd, LPARAM lParam) {
         wchar_t className[256] = { 0 };
         GetClassNameW(hwnd, className, 256);
         if (wcscmp(className, L"ThunderRT6CommandButton") == 0) {
-            if (GetPropW(hwnd, L"OldWndProc") == NULL) {
+        if (GetPropW(hwnd, L"OldWndProc") == NULL) {
                 WNDPROC pOldProc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)LaunchButtonWndProc);
-                if (pOldProc) { SetPropW(hwnd, L"OldWndProc", (HANDLE)pOldProc); }
-            }
+            if (pOldProc) { SetPropW(hwnd, L"OldWndProc", (HANDLE)pOldProc); }
         }
+    }
     }
     // 儲存其他需要操作的控制項句柄
     if (wcscmp(text, L"快速行走") == 0) g_hFastWalk = hwnd;
@@ -172,8 +181,8 @@ void CreateAllButtons() {
             if (g_hCustomFont) { SendMessage(g_hDiceButtons[i], WM_SETFONT, (WPARAM)g_hCustomFont, TRUE); }
             SetWindowPos(g_hDiceButtons[i], HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         }
-    }
-}
+            }
+        }
 
 // DLL 注入後執行的 UI 準備函式
 void PrepareUI() {
@@ -190,9 +199,15 @@ void PrepareUI() {
         if (g_hFastWalk && g_hAutoRiddle) {
             HWND hFastWalkParent = GetParent(g_hFastWalk);
             if (hFastWalkParent) ShowWindow(hFastWalkParent, SW_HIDE);
+
+            //隱藏「自動猜迷」按鈕本身
             ShowWindow(g_hAutoRiddle, SW_HIDE);
+
+            // 取得「自動猜迷」的父容器作為移動的目標容器
             HWND hNewParent = GetParent(g_hAutoRiddle);
             if (hNewParent) {
+
+                //移動「快速行走」
                 SetParent(g_hFastWalk, hNewParent);
                 ShowWindow(g_hFastWalk, SW_SHOW);
                 MoveWindow(g_hFastWalk, 108, 22, 102, 20, TRUE);

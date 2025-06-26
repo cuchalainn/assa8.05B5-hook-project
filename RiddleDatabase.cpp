@@ -196,6 +196,7 @@ std::wstring QA() {
         std::wstring correctAnswer = GetRiddleAnswer(unicodeBuffer);
 
         if (!correctAnswer.empty()) {
+            // 如果找到了標準答案，繼續執行選項判斷
             finalOutput = correctAnswer;
             DWORD guardValue = 0;
             LPCVOID dynamicGuardAddr = (LPCVOID)((BYTE*)g_saInfo.base + Addr_Riddle::RiddleGuardOffset);
