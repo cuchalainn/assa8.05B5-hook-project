@@ -3,114 +3,136 @@
 #include "UIManager.h"
 #include "Globals.h"
 #include "helpers.h"
+#include <map>
 
-// 全域變數定義
+// --- 全域與靜態變數 ---
 HFONT g_hCustomFont = NULL;
 HFONT g_hInfoBoxFont = NULL;
 
-// 內部使用的靜態變數
 static bool g_areButtonsCreated = false;
 static HWND g_hFastWalk = NULL;
 static HWND g_hWallHack = NULL;
 static HWND g_hAutoRiddle = NULL;
-static HWND g_hTargetParent = NULL; // 用於存放新按鈕的父容器句柄
+static HWND g_hTargetParent = NULL;
 
 // 按鈕 ID 定義
-#define ID_BUTTON_1 9001
-#define ID_BUTTON_2 9002
-#define ID_BUTTON_3 9003
-#define ID_BUTTON_4 9004
-#define ID_BUTTON_5 9005
-#define ID_BUTTON_6 9006
-static HWND g_hDiceButtons[6] = { NULL };
+enum ButtonID {
+    ID_ENCOUNT_ON = 9001,
+    ID_ENCOUNT_OFF,
+    ID_ACCOMPANY,
+    ID_ADVENTURE_GUILD,
+    ID_PILE,
+    ID_OFFLINE_ON
+};
 
-// 函式宣告
+// --- 函式宣告 ---
 void CreateAllButtons();
-void autosay(int button_id);
+void OnCustomButtonClick(int button_id);
 LRESULT CALLBACK ParentWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK ContainerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
-// 專為 "啟動石器" 按鈕設計的視窗程序
+// "啟動石器" 按鈕的視窗程序
 LRESULT CALLBACK LaunchButtonWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     WNDPROC pOldProc = (WNDPROC)GetPropW(hwnd, L"OldWndProc");
-    if (!pOldProc) { return DefWindowProcW(hwnd, uMsg, wParam, lParam); }
+    if (!pOldProc) {
+        return DefWindowProcW(hwnd, uMsg, wParam, lParam);
+    }
 
     if (uMsg == WM_LBUTTONUP) {
         LRESULT result = CallWindowProcW(pOldProc, hwnd, uMsg, wParam, lParam);
-        Sleep(300);
-        g_saInfo.PID = ReadSapid();
-        if (g_saInfo.PID != 0) {
-            g_saInfo.HWND = GetMainWindowForProcess(g_saInfo.PID);
-            g_saInfo.base = GetRemoteModuleHandle(g_saInfo.PID, L"sa_8002a.exe");
-            if (g_saInfo.hProcess) CloseHandle(g_saInfo.hProcess);
-            g_saInfo.hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION, FALSE, g_saInfo.PID);
-            if (!g_saInfo.HWND || !g_saInfo.base || !g_saInfo.hProcess) {
+
+        bool success = false;
+        for (int i = 0; i < 20; ++i) {
+            Sleep(250);
+            g_saInfo.PID = ReadSapid();
+            if (g_saInfo.PID != 0) {
+                g_saInfo.HWND = GetMainWindowForProcess(g_saInfo.PID);
+                g_saInfo.base = GetRemoteModuleHandle(g_saInfo.PID, L"sa_8002a.exe");
                 if (g_saInfo.hProcess) CloseHandle(g_saInfo.hProcess);
-                memset(&g_saInfo, 0, sizeof(TargetInfo));
+                g_saInfo.hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_QUERY_INFORMATION, FALSE, g_saInfo.PID);
+
+                if (g_saInfo.HWND && g_saInfo.base && g_saInfo.hProcess) {
+                    success = true;
+                    break;
+                }
             }
         }
-        else {
+
+        if (!success) {
             if (g_saInfo.hProcess) CloseHandle(g_saInfo.hProcess);
             memset(&g_saInfo, 0, sizeof(TargetInfo));
         }
+
         if (!g_areButtonsCreated) {
             CreateAllButtons();
             g_areButtonsCreated = true;
         }
         return result;
     }
+
     return CallWindowProcW(pOldProc, hwnd, uMsg, wParam, lParam);
 }
 
-// 掛載在主視窗上的視窗程序，用於接收自訂按鈕的點擊消息
-LRESULT CALLBACK ParentWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    WNDPROC pOldProc = (WNDPROC)GetPropW(hwnd, L"ParentOldWndProc");
-    if (!pOldProc) { return DefWindowProcW(hwnd, uMsg, wParam, lParam); }
+// 容器視窗程序，專門處理新按鈕的點擊事件
+LRESULT CALLBACK ContainerWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    WNDPROC pOldProc = (WNDPROC)GetPropW(hwnd, L"ContainerOldWndProc");
+    if (!pOldProc) {
+        return DefWindowProcW(hwnd, uMsg, wParam, lParam);
+    }
 
     if (uMsg == WM_COMMAND && HIWORD(wParam) == BN_CLICKED) {
         int button_id = LOWORD(wParam);
-        if (button_id >= ID_BUTTON_1 && button_id <= ID_BUTTON_6) {
-            autosay(button_id);
-            return 0; // 消息已處理
+        if (button_id >= ID_ENCOUNT_ON && button_id <= ID_OFFLINE_ON) {
+            OnCustomButtonClick(button_id);
+            return 0;
         }
     }
     return CallWindowProcW(pOldProc, hwnd, uMsg, wParam, lParam);
 }
 
-// 按鈕功能的核心函式，負責修改記憶體中的命令
-void autosay(int button_id) {
-    HMODULE hMod = GetModuleHandleW(L"Assa8.0B5.exe");
-    if (!hMod) return;
-    std::vector<BYTE> commandBytes;
-    switch (button_id) {
-    case ID_BUTTON_1: commandBytes = { 0x2F, 0x00, 0x65, 0x00, 0x6E, 0x00, 0x63, 0x00, 0x6F, 0x00, 0x75, 0x00, 0x6E, 0x00, 0x74, 0x00, 0x20, 0x00, 0x6F, 0x00, 0x6E, 0x00, 0x00, 0x00 }; break;
-    case ID_BUTTON_2: commandBytes = { 0x2F, 0x00, 0x65, 0x00, 0x6E, 0x00, 0x63, 0x00, 0x6F, 0x00, 0x75, 0x00, 0x6E, 0x00, 0x74, 0x00, 0x20, 0x00, 0x6F, 0x00, 0x66, 0x00, 0x66, 0x00, 0x00, 0x00 }; break;
-    case ID_BUTTON_3: commandBytes = { 0x2F, 0x00, 0x61, 0x00, 0x63, 0x00, 0x63, 0x00, 0x6F, 0x00, 0x6D, 0x00, 0x70, 0x00, 0x61, 0x00, 0x6E, 0x00, 0x79, 0x00, 0x00, 0x00 }; break;
-    case ID_BUTTON_4: commandBytes = { 0x4D, 0x52, 0x80, 0x5F, 0x92, 0x51, 0xAA, 0x96, 0x05, 0x80, 0x4B, 0x4E, 0xF6, 0x5C, 0x00, 0x00 }; break;
-    case ID_BUTTON_5: commandBytes = { 0x2F, 0x00, 0x70, 0x00, 0x69, 0x00, 0x6C, 0x00, 0x65, 0x00, 0x00, 0x00 }; break;
-    case ID_BUTTON_6: commandBytes = { 0x2F, 0x00, 0x6F, 0x00, 0x66, 0x00, 0x66, 0x00, 0x6C, 0x00, 0x69, 0x00, 0x6E, 0x00, 0x65, 0x00, 0x20, 0x00, 0x6F, 0x00, 0x6E, 0x00, 0x00, 0x00 }; break;
-    default: return;
+
+// 主視窗的視窗程序
+LRESULT CALLBACK ParentWndProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    WNDPROC pOldProc = (WNDPROC)GetPropW(hwnd, L"ParentOldWndProc");
+    if (!pOldProc) {
+        return DefWindowProcW(hwnd, uMsg, wParam, lParam);
     }
-    LPVOID stringAddress = (LPVOID)((BYTE*)hMod + 0xF53D1);
-    DWORD oldProtect;
-    BYTE clearBuffer[40] = { 0 };
-    if (VirtualProtect(stringAddress, sizeof(clearBuffer), PAGE_EXECUTE_READWRITE, &oldProtect)) {
-        memcpy(stringAddress, clearBuffer, sizeof(clearBuffer));
-        if (!commandBytes.empty()) {
-            memcpy(stringAddress, commandBytes.data(), commandBytes.size());
-        }
-        VirtualProtect(stringAddress, sizeof(clearBuffer), oldProtect, &oldProtect);
+    return CallWindowProcW(pOldProc, hwnd, uMsg, wParam, lParam);
+}
+
+// 按鈕點擊的核心功能
+void OnCustomButtonClick(int button_id) {
+    static const std::map<int, std::vector<BYTE>> commandMap = {
+        { ID_ENCOUNT_ON,      { 0x2F, 0x00, 0x65, 0x00, 0x6E, 0x00, 0x63, 0x00, 0x6F, 0x00, 0x75, 0x00, 0x6E, 0x00, 0x74, 0x00, 0x20, 0x00, 0x6F, 0x00, 0x6E, 0x00, 0x00, 0x00 } },
+        { ID_ENCOUNT_OFF,     { 0x2F, 0x00, 0x65, 0x00, 0x6E, 0x00, 0x63, 0x00, 0x6F, 0x00, 0x75, 0x00, 0x6E, 0x00, 0x74, 0x00, 0x20, 0x00, 0x6F, 0x00, 0x66, 0x00, 0x66, 0x00, 0x00, 0x00 } },
+        { ID_ACCOMPANY,       { 0x2F, 0x00, 0x61, 0x00, 0x63, 0x00, 0x63, 0x00, 0x6F, 0x00, 0x6D, 0x00, 0x70, 0x00, 0x61, 0x00, 0x6E, 0x00, 0x79, 0x00, 0x00, 0x00 } },
+        { ID_ADVENTURE_GUILD, { 0x4D, 0x52, 0x80, 0x5F, 0x92, 0x51, 0xAA, 0x96, 0x05, 0x80, 0x4B, 0x4E, 0xF6, 0x5C, 0x00, 0x00 } },
+        { ID_PILE,            { 0x2F, 0x00, 0x70, 0x00, 0x69, 0x00, 0x6C, 0x00, 0x65, 0x00, 0x00, 0x00 } },
+        { ID_OFFLINE_ON,      { 0x2F, 0x00, 0x6F, 0x00, 0x66, 0x00, 0x66, 0x00, 0x6C, 0x00, 0x69, 0x00, 0x6E, 0x00, 0x65, 0x00, 0x20, 0x00, 0x6F, 0x00, 0x6E, 0x00, 0x00, 0x00 } }
+    };
+
+    auto it = commandMap.find(button_id);
+    if (it != commandMap.end()) {
+        WriteCommandToMemory(it->second);
     }
 }
 
-// 遍歷子視窗，修改文字並掛鉤特定按鈕
+// 遍歷子視窗，修改文字、尋找舊版UI並掛鉤按鈕
 BOOL CALLBACK FindAndHookControlsProc(HWND hwnd, LPARAM lParam) {
     wchar_t text[256] = { 0 };
     GetWindowTextW(hwnd, text, 256);
 
     if (g_hTargetParent == NULL && wcsstr(text, L"腳本制作")) {
         g_hTargetParent = GetParent(hwnd);
+        if (g_hTargetParent && GetPropW(g_hTargetParent, L"ContainerOldWndProc") == NULL) {
+            WNDPROC pOldProc = (WNDPROC)SetWindowLongPtrW(g_hTargetParent, GWLP_WNDPROC, (LONG_PTR)ContainerWndProc);
+            if (pOldProc) {
+                SetPropW(g_hTargetParent, L"ContainerOldWndProc", (HANDLE)pOldProc);
+            }
+        }
     }
-    const std::vector<std::pair<std::wstring, std::wstring>> mappings = {
+
+    static const std::vector<std::pair<std::wstring, std::wstring>> mappings = {
         {L"激活石器", L"啟動石器"}, {L"自動KNPC", L"NPC對戰"}, {L"自動戰斗", L"自動戰鬥"},
         {L"快速戰斗", L"快速戰鬥"}, {L"戰斗設定", L"戰鬥設定"}, {L"戰斗設置", L"戰鬥設置"},
         {L"決斗", L"決鬥"}, {L"合成|料理|精鏈", L"合成|料理|精煉"}
@@ -122,19 +144,20 @@ BOOL CALLBACK FindAndHookControlsProc(HWND hwnd, LPARAM lParam) {
             break;
         }
     }
+
     if (wcscmp(text, L"啟動石器") == 0) {
         wchar_t className[256] = { 0 };
         GetClassNameW(hwnd, className, 256);
-        if (wcscmp(className, L"ThunderRT6CommandButton") == 0) {
-            if (GetPropW(hwnd, L"OldWndProc") == NULL) {
-                WNDPROC pOldProc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)LaunchButtonWndProc);
-                if (pOldProc) { SetPropW(hwnd, L"OldWndProc", (HANDLE)pOldProc); }
-            }
+        if (wcscmp(className, L"ThunderRT6CommandButton") == 0 && GetPropW(hwnd, L"OldWndProc") == NULL) {
+            WNDPROC pOldProc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)LaunchButtonWndProc);
+            if (pOldProc) { SetPropW(hwnd, L"OldWndProc", (HANDLE)pOldProc); }
         }
     }
+
     if (wcscmp(text, L"快速行走") == 0) g_hFastWalk = hwnd;
     else if (wcscmp(text, L"穿牆行走") == 0) g_hWallHack = hwnd;
     else if (wcscmp(text, L"自動猜迷") == 0) g_hAutoRiddle = hwnd;
+
     return TRUE;
 }
 
@@ -147,21 +170,35 @@ void CreateAllButtons() {
     if (g_hCustomFont == NULL) {
         g_hCustomFont = CreateFontW(-MulDiv(85, GetDeviceCaps(GetDC(hParent), LOGPIXELSY), 720), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft JhengHei UI");
     }
-    const int start_x = 5, start_y = 47, btn_w = 100, btn_h = 25, gap_x = 6, gap_y = 6;
-    POINT positions[6] = { {start_x, start_y}, {start_x + btn_w + gap_x, start_y}, {start_x, start_y + btn_h + gap_y}, {start_x + btn_w + gap_x, start_y + btn_h + gap_y}, {start_x, start_y + 2 * (btn_h + gap_y)}, {start_x + btn_w + gap_x, start_y + 2 * (btn_h + gap_y)} };
-    const int ids[6] = { ID_BUTTON_1, ID_BUTTON_2, ID_BUTTON_3, ID_BUTTON_4, ID_BUTTON_5, ID_BUTTON_6 };
-    const wchar_t* labels[6] = { L"開始遇敵", L"停止遇敵", L"呼喚野獸", L"冒險公會", L"堆疊道具", L"離線掛機" };
 
-    for (int i = 0; i < 6; ++i) {
-        g_hDiceButtons[i] = CreateWindowExW(0, L"BUTTON", labels[i], WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, positions[i].x, positions[i].y, btn_w, btn_h, hParent, (HMENU)ids[i], hInstance, NULL);
-        if (g_hDiceButtons[i]) {
-            if (g_hCustomFont) { SendMessage(g_hDiceButtons[i], WM_SETFONT, (WPARAM)g_hCustomFont, TRUE); }
-            SetWindowPos(g_hDiceButtons[i], HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    const int start_x = 5, start_y = 47, btn_w = 100, btn_h = 25, gap_x = 6, gap_y = 6;
+
+    struct ButtonInfo {
+        int id;
+        const wchar_t* label;
+        POINT pos;
+    };
+
+    ButtonInfo buttons[] = {
+        { ID_ENCOUNT_ON,      L"開始遇敵",   {start_x, start_y} },
+        { ID_ENCOUNT_OFF,     L"停止遇敵",   {start_x + btn_w + gap_x, start_y} },
+        { ID_ACCOMPANY,       L"呼喚野獸",   {start_x, start_y + btn_h + gap_y} },
+        { ID_ADVENTURE_GUILD, L"冒險公會",   {start_x + btn_w + gap_x, start_y + btn_h + gap_y} },
+        { ID_PILE,            L"堆疊道具",   {start_x, start_y + 2 * (btn_h + gap_y)} },
+        { ID_OFFLINE_ON,      L"離線掛機",   {start_x + btn_w + gap_x, start_y + 2 * (btn_h + gap_y)} }
+    };
+
+    for (const auto& btn : buttons) {
+        HWND hButton = CreateWindowExW(0, L"BUTTON", btn.label, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            btn.pos.x, btn.pos.y, btn_w, btn_h,
+            hParent, (HMENU)btn.id, hInstance, NULL);
+        if (hButton && g_hCustomFont) {
+            SendMessage(hButton, WM_SETFONT, (WPARAM)g_hCustomFont, TRUE);
         }
     }
 }
 
-// DLL 注入後執行的 UI 準備函式
+// UI 準備函式
 void PrepareUI() {
     g_assaInfo.HWND = GetCurrentProcessMainWindow();
     if (g_assaInfo.HWND) {
@@ -169,14 +206,16 @@ void PrepareUI() {
             WNDPROC pOldProc = (WNDPROC)SetWindowLongPtrW(g_assaInfo.HWND, GWLP_WNDPROC, (LONG_PTR)ParentWndProc);
             if (pOldProc) { SetPropW(g_assaInfo.HWND, L"ParentOldWndProc", (HANDLE)pOldProc); }
         }
+
         EnumChildWindows(g_assaInfo.HWND, FindAndHookControlsProc, NULL);
-        if (g_hInfoBoxFont == NULL) {
-            g_hInfoBoxFont = CreateFontW(-MulDiv(4, GetDeviceCaps(GetDC(g_assaInfo.HWND), LOGPIXELSY), 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"新細明體");
-        }
+
         if (g_hFastWalk && g_hAutoRiddle) {
             HWND hFastWalkParent = GetParent(g_hFastWalk);
             if (hFastWalkParent) ShowWindow(hFastWalkParent, SW_HIDE);
+
+            // 【修正】修正此處的打字錯誤
             ShowWindow(g_hAutoRiddle, SW_HIDE);
+
             HWND hNewParent = GetParent(g_hAutoRiddle);
             if (hNewParent) {
                 SetParent(g_hFastWalk, hNewParent);
