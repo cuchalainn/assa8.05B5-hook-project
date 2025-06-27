@@ -14,3 +14,4 @@ void OverwriteStringInMemory(LPCWSTR targetAddress, const std::wstring& newStrin
 DWORD ReadSapid();
 HWND GetMainWindowForProcess(DWORD dwProcessId);
 HWND GetCurrentProcessMainWindow();
+HWND ReadChildWindowHandle(); // 【新增】宣告讀取子視窗句柄的函式

@@ -9,4 +9,7 @@ void PrepareUI();
 
 // 宣告為全域變數，以便其他 .cpp 檔案可以存取
 extern HFONT g_hCustomFont;  // 用於自訂按鈕的字型
-extern HFONT g_hInfoBoxFont; // 用於訊息窗口的字型
+
+// 【修正】宣告新的字型控制代碼，使其能在 dllmain.cpp 中被存取
+extern HFONT g_hSnapButtonFont;
+extern HFONT g_hPoemLabelFont;

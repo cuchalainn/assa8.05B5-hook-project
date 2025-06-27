@@ -433,26 +433,41 @@ __declspec(naked) void MyStringCopyHook() {
             jmp gStringCopyHookReturnAddr
     }
 }
-
 // --- 自動堆疊 (Auto Pile) Hook ---
 void ProcessAutoPile() {
     HMODULE hMod = GetModuleHandleW(L"Assa8.0B5.exe");
     if (!hMod) return;
+    // 取得自動堆疊開關的記憶體位址 (Assa8.0B5.exe+F6668)
     BYTE* switchAddress = (BYTE*)hMod + Addr::AutoPileSwitchOffset;
+    // 判斷開關的值
     if (*switchAddress == 1) {
-        pileCounter++;
+        // 如果開關是開啟的 (值為 1)
+        pileCounter++; // 計數器累加
+        // 如果計數器大於 10
         if (pileCounter > 10) {
-            const std::vector<BYTE> pileCommand = { 0x2F, 0x00, 0x70, 0x00, 0x69, 0x00, 0x6C, 0x00, 0x65, 0x00, 0x00, 0x00 };
+            // 準備 "/pile" 指令的位元組序列
+            const std::vector<BYTE> pileCommand = {
+                0x2F, 0x00, 0x70, 0x00, 0x69, 0x00, 0x6C, 0x00, 0x65, 0x00, 0x00, 0x00
+            };
+            // 將指令寫入記憶體以執行
             WriteCommandToMemory(pileCommand);
+            // 執行堆疊後，將計數器歸零
             pileCounter = 0;
         }
     }
+    else {
+        // 如果開關是關閉的 (值為 0 或其他)
+        // 將計數器歸零，確保功能關閉後，下次開啟時不會立即觸發
+        pileCounter = 0;
+    }
 }
+
 __declspec(naked) void MyAutoPileHook() {
     __asm {
         pushad
         call ProcessAutoPile
         popad
+        mov al,0
         jmp gAutoPileJumpTarget
     }
 }
@@ -469,7 +484,8 @@ int ShouldDoCustomJump() {
 
     static const std::vector<std::wstring> commandsToMatch = {
         L"/status", L"/accompany", L"/eo", L"/offline on", L"/offline off",
-        L"/watch", L"/encount on", L"/encount off", L"/pile", L"前往冒險者之島"
+        L"/watch", L"/encount on", L"/encount off", 
+        L"/pile", L"/pile on", L"/pile off", L"前往冒險者之島"
     };
 
     for (const auto& cmd : commandsToMatch) {

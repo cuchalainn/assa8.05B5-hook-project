@@ -1,7 +1,7 @@
 // 檔案: helpers.cpp
 #include "pch.h"
 #include "helpers.h"
-
+#include "Globals.h" 
 // ========== 常數定義 ==========
 namespace Addr {
     constexpr DWORD TargetPidOffset = 0xF5304;
@@ -85,4 +85,43 @@ void OverwriteStringInMemory(LPCWSTR targetAddress, const std::wstring& newStrin
         wcscpy_s((wchar_t*)targetAddress, bufferSize / sizeof(wchar_t), newString.c_str());
         VirtualProtect((LPVOID)targetAddress, bufferSize, oldProtect, &oldProtect);
     }
+}
+
+// 【新增】這個函式專門用來讀取子視窗的句柄
+HWND ReadChildWindowHandle() {
+    HMODULE hMod = GetModuleHandleW(L"Assa8.0B5.exe");
+    if (!hMod) return NULL;
+
+    // 定義兩個可能的基底指標位址
+    DWORD pointerOffsets[] = { 0xF69BC, 0xF69D0 };
+    HWND childHwnd = NULL;
+
+    for (DWORD offset : pointerOffsets) {
+        // 開始解析多級指標
+        // [[Assa8.0B5.exe + offset] + 0x10] + 0x40
+        uintptr_t currentAddr = (uintptr_t)hMod + offset;
+
+        // 讀取第一層指標
+        if (ReadProcessMemory(g_assaInfo.hProcess, (LPCVOID)currentAddr, &currentAddr, sizeof(currentAddr), NULL)) {
+            // 加上 0x10
+            currentAddr += 0x10;
+            // 讀取第二層指標
+            if (ReadProcessMemory(g_assaInfo.hProcess, (LPCVOID)currentAddr, &currentAddr, sizeof(currentAddr), NULL)) {
+                // 加上 0x40
+                currentAddr += 0x40;
+                // 讀取最終的 HWND 值
+                if (ReadProcessMemory(g_assaInfo.hProcess, (LPCVOID)currentAddr, &childHwnd, sizeof(childHwnd), NULL)) {
+                    // 如果成功讀到一個非零的句柄，就跳出迴圈
+                    if (childHwnd != NULL) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    // 如果最終句柄有效，但視窗已關閉，也將其視為無效
+    if (childHwnd && !IsWindow(childHwnd)) {
+        childHwnd = NULL;
+    }
+    return childHwnd;
 }
