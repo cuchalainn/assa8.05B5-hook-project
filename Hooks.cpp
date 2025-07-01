@@ -10,9 +10,225 @@
 #include "RiddleDatabase.h" // 引用猜謎資料庫
 #include <functional>
 #include <random>
+#include <string>      // 【新增】用於處理字串物件
+#include <algorithm>   // 【新增】用於字串轉換
+#include <cctype>      // 【新增】用於字元大小寫轉換
+#include <cmath> // 【新增】用於 fmod 函式 (浮點數取餘)
+#include <vector> // 【新增】用於字串分割
+#include <sstream> // 【新增】用於字串分割
+#include <fstream> // 【新增】用於檔案讀寫 (fstream)
+
+// =================================================================
+// Assign 指令核心邏輯 (修正版 - 支援 assign save/load)
+// =================================================================
+bool ProcessAssignStringCommand() {
+    try {
+        // 1. 從固定位址讀取指令字串
+        LPCWSTR finalStringAddress = (LPCWSTR)0x0019DF9C;
+        if (IsBadReadPtr(finalStringAddress, sizeof(wchar_t))) {
+            return false;
+        }
+        std::wstring fullCommand(finalStringAddress);
+
+        // 2. 優先嘗試用空格分割，檢查是否為 save/load 指令
+        std::wstringstream wss(fullCommand);
+        std::vector<std::wstring> space_parts;
+        std::wstring part;
+        while (wss >> part) { // 按空格分割所有部分
+            space_parts.push_back(part);
+        }
+
+        // 檢查是否為 "assign save" 或 "assign load"
+        if (space_parts.size() == 2) {
+            std::wstring cmd = space_parts[0];
+            std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::tolower);
+
+            if (cmd == L"assign") {
+                std::wstring action = space_parts[1];
+                std::transform(action.begin(), action.end(), action.begin(), ::tolower);
+                const char* filename = "ev_vars.txt";
+
+                if (action == L"save") {
+                    std::ofstream outFile(filename);
+                    if (outFile.is_open()) {
+                        outFile << ev1 << std::endl;
+                        outFile << ev2 << std::endl;
+                        outFile << ev3 << std::endl;
+                        outFile.close();
+                        //MessageBoxW(NULL, L"所有 ev 變數已成功保存到 ev_vars.txt", L"Assign SAVE", MB_OK | MB_ICONINFORMATION);
+                        return true;
+                    }
+                }
+                else if (action == L"load") {
+                    std::ifstream inFile(filename);
+                    if (inFile.is_open()) {
+                        inFile >> ev1 >> ev2 >> ev3;
+                        inFile.close();
+                        wchar_t msg[256];
+                        //swprintf_s(msg, 256, L"已從 ev_vars.txt 成功讀取變數:\n- ev1: %g\n- ev2: %g\n- ev3: %g", ev1, ev2, ev3);
+                        //MessageBoxW(NULL, msg, L"Assign LOAD", MB_OK | MB_ICONINFORMATION);
+                        return true;
+                    }
+                }
+            }
+        }
+
+
+        // 3. 如果不是 save/load，則嘗試解析原有的數值運算指令
+        // 格式: assign evX,=,100
+        std::wstringstream wss_numeric(fullCommand);
+        std::vector<std::wstring> num_parts;
+        if (std::getline(wss_numeric, part, L' ')) {
+            num_parts.push_back(part);
+        }
+        if (std::getline(wss_numeric, part, L' ')) {
+            std::wstringstream wss_params(part);
+            while (std::getline(wss_params, part, L',')) {
+                num_parts.push_back(part);
+            }
+        }
+
+        if (num_parts.size() != 4) {
+            return false;
+        }
+
+        std::wstring cmd = num_parts[0];
+        std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::tolower);
+        if (cmd != L"assign") {
+            return false;
+        }
+
+        // ... (後續的數值運算邏輯完全不變) ...
+        std::wstring varName = num_parts[1];
+        std::transform(varName.begin(), varName.end(), varName.begin(), ::tolower);
+        double* targetVariable = nullptr;
+        if (varName == L"ev1")      targetVariable = &ev1;
+        else if (varName == L"ev2") targetVariable = &ev2;
+        else if (varName == L"ev3") targetVariable = &ev3;
+        else return false;
+
+        std::wstring valStr = num_parts[3];
+        bool is_valid_number = !valStr.empty() && [&valStr]() {
+            bool dot_found = false;
+            for (size_t i = 0; i < valStr.length(); ++i) {
+                wchar_t c = valStr[i];
+                if (iswdigit(c)) continue;
+                if (c == L'.' && !dot_found) { dot_found = true; continue; }
+                if (c == L'-' && i == 0) continue;
+                return false;
+            }
+            return true;
+            }();
+
+        if (!is_valid_number) {
+            return false;
+        }
+
+        std::wstring opStr = num_parts[2];
+        if (opStr.length() != 1) return false;
+        wchar_t op = opStr[0];
+        double value = _wtof(valStr.c_str());
+
+        switch (op) {
+        case L'=': *targetVariable = value; break;
+        case L'+': *targetVariable += value; break;
+        case L'-': *targetVariable -= value; break;
+        case L'*': *targetVariable *= value; break;
+        case L'/': if (value != 0) *targetVariable /= value; break;
+        case L'%': if (value != 0) *targetVariable = fmod(*targetVariable, value); break;
+        default: return false;
+        }
+
+        wchar_t successMsg[256];
+        //swprintf_s(successMsg, 256, L"變數 %s 的值已更新為: %g", varName.c_str(), *targetVariable);
+        //MessageBoxW(NULL, successMsg, L"Assign 指令成功", MB_OK | MB_ICONINFORMATION);
+
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+// =================================================================
+// 寵物檢查核心邏輯 (C++ 實現)
+// =================================================================
+
+// 將一個最多16個字元的Unicode數字字串，從指定位置開始轉換為64位元整數
+ULONGLONG ParseUnicodeNumber(const wchar_t* str, int start, int len) {
+    ULONGLONG result = 0;
+    for (int i = 0; i < len; ++i) {
+        wchar_t c = str[start + i];
+        if (c >= L'0' && c <= L'9') {
+            result = result * 10 + (c - L'0');
+        }
+        else {
+            // 如果遇到非數字字元，可以視為無效
+            return 0;
+        }
+    }
+    return result;
+}
+
+
+// 處理寵物 "尾數" 和 "四圍" 檢查的主要函式
+// checkType: 1=尾數檢查, 2=四圍檢查
+// petStats: 包含寵物當前 LV, HP, ATK, DEF, DEX 的結構指標
+// returns: 成功則返回 7777，失敗則返回對應的錯誤碼 (6666 或 9999)
+int ProcessPetChecks(int checkType, const PetStats* stats) {
+    if (checkType == 1) { // --- 尾數檢查 ---
+        if ((stats->HP % 10 == 7) &&
+            (stats->ATK % 10 == 7) &&
+            (stats->DEF % 10 == 7) &&
+            (stats->DEX % 10 == 7)) {
+            return 7777; // 全部符合，成功
+        }
+        return 9999; // 至少一個不符合，失敗
+    }
+
+    if (checkType == 2) { // --- 四圍檢查 ---
+        LPCWSTR* pOuterString = (LPCWSTR*)0x0019FA58;
+        LPCWSTR targetString = *pOuterString;
+        // 檢查字串長度是否為16
+        if (wcslen(targetString) != 16) {
+            return 5555;
+        }
+        // 從字串解析出目標數值
+        ULONGLONG targetLv = ParseUnicodeNumber(targetString, 0, 3);
+        ULONGLONG targetHP = ParseUnicodeNumber(targetString, 3, 4);
+        ULONGLONG targetATK = ParseUnicodeNumber(targetString, 7, 3);
+        ULONGLONG targetDEF = ParseUnicodeNumber(targetString, 10, 3);
+        ULONGLONG targetDEX = ParseUnicodeNumber(targetString, 13, 3);
+        // 檢查是否有任何一個數值解析為0，若有則視為無效並返回
+        if (targetLv * targetHP * targetATK * targetDEF * targetDEX == 0) {
+            return 6666;
+        }
+        // 進行比較
+        if ((stats->LV == targetLv) &&
+            (stats->HP >= targetHP) &&
+            (stats->ATK >= targetATK) &&
+            (stats->DEF >= targetDEF) &&
+            (stats->DEX >= targetDEX)) {
+            return 7777; // 全部通過
+        }
+        return 4444; // 至少一項不通過
+    }
+
+    return 0; // 未知的檢查類型
+}
+
+// 將結果數字寫回目標字串記憶體
+void WriteCheckResult(int result) {
+    LPCWSTR* pOuterString = (LPCWSTR*)0x0019FA58;
+    if (IsBadReadPtr(pOuterString, sizeof(LPCWSTR)) || IsBadReadPtr(*pOuterString, sizeof(wchar_t))) {
+        return;
+    }
+    wchar_t buffer[17]; // 16個字元 + 結束符
+    swprintf_s(buffer, L"%d", result);
+    OverwriteStringInMemory(*pOuterString, buffer);
+}
 
 // --- 命名空間與常數定義 ---
-// 【名稱建議】Addr 可以考慮改名為 Offsets 或 GameOffsets，更明確表示這些是記憶體偏移量。
 namespace Addr {
     // 這些是 Assa8.0B5.exe 程式中，我們想要 Hook 的位置相對於模組基底位址的偏移量。
     // 這些值是透過逆向工程工具 (如 x64dbg, IDA) 分析 Assa 程式得到的。
@@ -29,11 +245,21 @@ namespace Addr {
     constexpr DWORD CommandChainJumpTargetOffset = 0x83E66; // Set指令成功後跳轉的位址
     constexpr DWORD StringCopyHookOffset = 0x7EBDB;     // 處理 "Set2" 指令的點 (用來替換字串)
     constexpr DWORD StringCopyTargetPtr = 0x1220;       // Set2指令原呼叫函式的指標位址
-
+    // 【新增】Assign 指令 Hook 偏移量
+    constexpr DWORD AssignHookOffset = 0x76DC0;
     // 自動堆疊相關偏移
     constexpr DWORD AutoPileHookOffset = 0x6CC7E;        // 自動堆疊的觸發點
     constexpr DWORD AutoPileSwitchOffset = 0xF6668;     // 自動堆疊功能的開關位址
     constexpr DWORD AutoPileJumpTargetOffset = 0x6D399; // 自動堆疊Hook完成後跳回的位址
+
+    // 坐騎鎖定功能修復
+    constexpr DWORD MountHookOffset = 0x686DD;          // 修復坐騎鎖定功能
+
+    // 隊伍檢查功能
+    constexpr DWORD TeamCheckHookOffset = 0x89B3A;      // 判斷隊伍狀態
+
+    // 【新增】寵物檢查功能
+    constexpr DWORD PetCheckHookOffset = 0x8A370;       // 寵物最大血量、四圍、尾數777檢查
 
     // 目標遊戲 (sa_8002a.exe) 記憶體偏移
     constexpr DWORD GameTimeOffset = 0x1AD760;          // 遊戲時間
@@ -43,9 +269,6 @@ namespace Addr {
 }
 
 // --- Hook 返回位址全域變數 ---
-// 這些變數用來儲存每個 Hook 點原始程式碼的下一條指令位址。
-// 在我們的 Hook 函式執行完畢後，需要跳轉到這些位址，讓原程式能繼續正常執行。
-// 【名稱建議】gCompareHookReturnAddr 可改為 g_pCompareHookReturn (p代表pointer)
 BYTE* gCompareHookReturnAddr = nullptr;
 BYTE* gAddEspHookReturnAddr = nullptr;
 BYTE* gEcxStringHookReturnAddr = nullptr;
@@ -55,15 +278,21 @@ BYTE* gButton2HookReturnAddr = nullptr;
 BYTE* gIfitemHookReturnAddr = nullptr;
 BYTE* gCommandChainHookReturnAddr = nullptr;
 BYTE* gStringCopyHookReturnAddr = nullptr;
-void* g_pfnVbaStrCopy = nullptr; // 儲存Set2原始呼叫的函式指標
+void* g_pfnVbaStrCopy = nullptr;
 void* gAutoPileJumpTarget = nullptr;
 void* gCommandChainJumpTarget = nullptr;
+BYTE* gMountHookReturnAddr = nullptr;
+BYTE* gTeamCheckHookReturnAddr = nullptr;
+// 【新增】寵物檢查Hook的返回位址
+BYTE* gPetCheckHookReturnAddr = nullptr;
+// 【新增】Assign 指令 Hook 返回位址
+BYTE* gAssignHookReturnAddr = nullptr;
+
 
 // 【優化】將重複的 Hook 安裝邏輯提取出來，做成一個共用函式
 static bool InstallJmpHook(LPCWSTR moduleName, DWORD offset, LPVOID newFunction, size_t hookSize, LPVOID* returnAddress) {
     HMODULE hMod = GetModuleHandleW(moduleName);
     if (!hMod) {
-        // 如果獲取模組失敗，可以考慮記錄錯誤
         return false;
     }
 
@@ -76,7 +305,6 @@ static bool InstallJmpHook(LPCWSTR moduleName, DWORD offset, LPVOID newFunction,
         DWORD jmpOffset = (DWORD)((BYTE*)newFunction - pTarget - 5);
         *(DWORD*)(pTarget + 1) = jmpOffset;
 
-        // 用 NOP (0x90) 填充多餘的空間，確保指令完整性
         for (size_t i = 5; i < hookSize; ++i) {
             pTarget[i] = 0x90;
         }
@@ -87,33 +315,224 @@ static bool InstallJmpHook(LPCWSTR moduleName, DWORD offset, LPVOID newFunction,
     return false;
 }
 
+// --- 寵物最大血量、四圍、尾數777檢查 (重構版) ---
+__declspec(naked) void MyPetCheckHook() {
+    __asm {
+        // eax 是由 Hook 點之前的 mov eax,[ebp-0x90] 所設定
+        // 根據 eax 指向的值，判斷執行哪個分支
+        // 檢查是否為 "滿血"
+        cmp dword ptr[eax], 0x88406EFF
+        je check_max_hp_asm
+        // 檢查是否為 "尾數"
+        cmp dword ptr[eax], 0x65785C3E
+        je call_cpp_checker
+        // 檢查是否為 "四圍"
+        cmp dword ptr[eax], 0x570D56DB
+        je call_cpp_checker
+        // 如果都不是，則執行原始指令並返回
+        original_path :
+        push 0x004219D0
+            jmp gPetCheckHookReturnAddr
+
+        check_max_hp_asm :// --- 滿血邏輯 (純組合語言) ---
+            push eax
+            call esi
+            test eax, eax
+            jne fail_jump // 如果 call 的結果不為 0，跳轉到失敗路徑
+            mov esi, [ebp - 0x14]
+            mov edx, ds: [0x004F5204] //寵物數值基址
+            lea eax, [esi + esi * 8]
+            shl eax, 0x03
+            sub eax, esi
+            lea ecx, [eax + eax * 4]
+            mov eax, [edx + ecx * 8 + 8] // 讀取寵物滿血值
+            mov [ebp - 0x14],eax  // 將結果存入目標變數
+            jmp success_path_asm
+
+        call_cpp_checker :// --- 尾數 & 四圍邏輯 (呼叫 C++) ---
+            push eax
+            call esi
+            test eax, eax
+            jne fail_jump // 如果 call 的結果不為 0，跳轉
+            mov esi, [ebp - 0x14]
+            mov edx, ds: [0x004F5204] //寵物數值基址
+            lea eax, [esi + esi * 8]
+            shl eax, 0x03
+            sub eax, esi
+            lea ecx, [eax + eax * 4]
+            // 準備結構體和參數以呼叫 C++ 函式
+            sub esp, 20 // 在堆疊上為 PetStats 結構體分配空間
+            mov edi, esp              // edi 指向堆疊上的 PetStats
+            // 填充結構體
+            mov eax, [edx + ecx * 8 + 0x1C] // 等級
+            mov[edi + 0], eax
+            mov eax, [edx + ecx * 8 + 8]    // 血
+            mov[edi + 4], eax
+            mov eax, [edx + ecx * 8 + 0x20] // 攻
+            mov[edi + 8], eax
+            mov eax, [edx + ecx * 8 + 0x24] // 防
+            mov[edi + 12], eax
+            mov eax, [edx + ecx * 8 + 0x28] // 敏
+            mov[edi + 16], eax
+            // 判斷是尾數還是四圍檢查
+            mov eax, [ebp - 0x90] // 重新載入原始的檢查類型指標
+            cmp dword ptr[eax], 0x65785C3E
+            je is_last_digit
+
+            is_stats_check :
+        push edi          // 參數2: PetStats 結構指標
+            push 2            // 參數1: checkType = 2 (四圍)
+            jmp do_call
+
+            is_last_digit :
+        push edi          // 參數2: PetStats 結構指標
+            push 1            // 參數1: checkType = 1 (尾數)
+
+            do_call :
+            call ProcessPetChecks // 呼叫 C++ 函式
+            add esp, 8             // 清理2個參數的堆疊
+
+            // C++ 函式返回後，EAX 中是結果 (7777, 6666, 9999)
+            push eax               // 保存結果
+            call WriteCheckResult  // 呼叫 C++ 函式將結果寫入字串
+            pop eax                // 恢復結果到 EAX
+            add esp, 20 // 釋放為 PetStats 分配的堆疊空間[eax]
+            mov eax,7777
+            mov [ebp - 0x14], eax  // 將結果存入目標變數
+		success_path_asm :
+            push 0x0048A119        // 跳轉到成功處理流程
+            ret
+        fail_jump :
+            push 0x0048A3A2
+            ret
+    }
+}
+
+
+// --- 隊伍檢查 Hook ---
+__declspec(naked) void MyTeamCheckHook() {
+    __asm {
+        cmp dword ptr ds : [eax] , 0x4F0D968A
+        je team_check_logic
+        push 0x004219D0
+        jmp gTeamCheckHookReturnAddr
+        team_check_logic :
+            push eax
+            call esi
+            test eax, eax
+            push esi
+            mov ecx, 1
+            mov esi, ds: [0x004F523C]
+            cmp dword ptr ds : [esi + 0x30] , 0
+            jle next1
+            inc ecx
+        next1 :
+            cmp dword ptr ds : [esi + 0x60] , 0
+            jle next2
+            inc ecx
+        next2 :
+            cmp dword ptr ds : [esi + 0x90] , 0
+            jle next3
+            inc ecx
+        next3 :
+            cmp dword ptr ds : [esi + 0xC0] , 0
+            jle end_comparisons
+            inc ecx
+        end_comparisons :
+            pop esi
+            mov[ebp - 0x14], ecx
+            push 0x00489DC3
+            ret
+    }
+}
+
+
+// --- 修復坐騎鎖定功能 ---
+__declspec(naked) void MyMountHook() {
+    __asm {
+        mov cl, byte ptr ds : [0x004F665B]
+        cmp cl, byte ptr ds : [0x004F51EC]
+        je jump_if_equal
+        jmp gMountHookReturnAddr
+        jump_if_equal :
+        push 0x004687CA
+        ret
+    }
+}
 
 // --- Let指令 Hook ---
-// 函式: ProcessParameterHook
-// 功能: 處理 Assa 的 "Let" 指令，讓我們可以定義自己的變數 (如 #遊戲時間)。
-// 說明: 當 Assa 腳本執行到 `Let` 時，這個函式會被觸發。它檢查變數名是否為我們預定義的
-//       特殊字串，如果是，就從遊戲記憶體或其他來源讀取對應的值，並寫回給 Assa。
-// 調用: 由 MyParameterHook (Naked Function) 呼叫。
 void ProcessParameterHook(DWORD eax_value) {
-    // ... (此處省略內部實作，功能為字串比對與執行對應操作)
     if (IsBadReadPtr((void*)eax_value, sizeof(LPCWSTR))) return;
     LPCWSTR* pString = (LPCWSTR*)eax_value;
     if (IsBadReadPtr(*pString, sizeof(wchar_t))) return;
-
     LPCWSTR finalStringAddress = *pString;
-
+    // --- 大小寫不敏感處理 ---
+    // 1. 將傳入的字串轉換為全小寫的 std::wstring，用於後續比對
+    std::wstring lookupKey(finalStringAddress);
+    std::transform(lookupKey.begin(), lookupKey.end(), lookupKey.begin(),
+        [](wchar_t c) { return std::tolower(c); });
+    // ---
     static const std::unordered_map<std::wstring, std::function<void(LPCWSTR)>> actionMap = {
-        {L"#系統時間秒數差", [](LPCWSTR addr) {
-            SYSTEMTIME st_now, st_year_start = { 0 };
-            GetSystemTime(&st_now);
-            st_year_start.wYear = st_now.wYear; st_year_start.wMonth = 1; st_year_start.wDay = 1;
-            FILETIME ft_now, ft_year_start;
-            SystemTimeToFileTime(&st_now, &ft_now); SystemTimeToFileTime(&st_year_start, &ft_year_start);
-            ULARGE_INTEGER uli_now = {ft_now.dwLowDateTime, ft_now.dwHighDateTime};
-            ULARGE_INTEGER uli_year_start = {ft_year_start.dwLowDateTime, ft_year_start.dwHighDateTime};
-            ULONGLONG totalSeconds = (uli_now.QuadPart - uli_year_start.QuadPart) / 10000000;
+        {L"#系統毫秒時間戳00", [](LPCWSTR addr) {
+            SYSTEMTIME st_now;
+            GetSystemTime(&st_now); // 取得目前 UTC 時間
+            FILETIME ft_now;
+            SystemTimeToFileTime(&st_now, &ft_now); // 轉換為 FILETIME 格式
+            ULARGE_INTEGER uli_now;
+            uli_now.LowPart = ft_now.dwLowDateTime;
+            uli_now.HighPart = ft_now.dwHighDateTime;
+            // uli_now.QuadPart 是從 1601/1/1 至今的 100奈秒 (nanosecond) 間隔數
+            // 1. 將其轉換為毫秒 (millisecond) -> 除以 10000
+            ULONGLONG totalMilliseconds = uli_now.QuadPart / 10000;
+            // 2. 對 7,776,000,000 取餘數
+            ULONGLONG finalValue = totalMilliseconds % 7776000000ULL;
             wchar_t buffer[64];
-            swprintf(buffer, 64, L"%llu", totalSeconds);
+            // 使用 %llu 來格式化 ULONGLONG (unsigned long long)
+            swprintf_s(buffer, 64, L"%llu", finalValue);
+            OverwriteStringInMemory(addr, buffer);
+        }},
+        {L"#系統秒數時間戳", [](LPCWSTR addr) {
+            SYSTEMTIME st_now;
+            GetSystemTime(&st_now); // 取得目前 UTC 時間
+            FILETIME ft_now;
+            SystemTimeToFileTime(&st_now, &ft_now); // 轉換為 FILETIME 格式
+            ULARGE_INTEGER uli_now;
+            uli_now.LowPart = ft_now.dwLowDateTime;
+            uli_now.HighPart = ft_now.dwHighDateTime;
+            // uli_now.QuadPart 是從 1601/1/1 至今的 100奈秒 (nanosecond) 間隔數
+            // 1. 將其轉換為秒 -> 除以 10000000
+            ULONGLONG totalMilliseconds = uli_now.QuadPart / 10000000;
+            // 2. 對 7,776,000 取餘數
+            ULONGLONG finalValue = totalMilliseconds % 7776000ULL;
+            wchar_t buffer[64];
+            // 使用 %llu 來格式化 ULONGLONG (unsigned long long)
+            swprintf_s(buffer, 64, L"%llu", finalValue);
+            OverwriteStringInMemory(addr, buffer);
+        }},
+        {L"#xpos", [](LPCWSTR addr) {
+            // 【修正】改為使用全域變數 g_assaInfo.base
+            if (!g_assaInfo.base) return;
+
+            DWORD xposValue = 0;
+            LPCVOID dynamicAddress = (LPCVOID)((BYTE*)g_assaInfo.base + 0xF5078);
+
+            xposValue = *(DWORD*)dynamicAddress;
+
+            wchar_t buffer[64];
+            swprintf_s(buffer, 64, L"%d", xposValue);
+            OverwriteStringInMemory(addr, buffer);
+        }},
+        {L"#ypos", [](LPCWSTR addr) {
+            // 【修正】改為使用全域變數 g_assaInfo.base
+            if (!g_assaInfo.base) return;
+
+            DWORD yposValue = 0;
+            LPCVOID dynamicAddress = (LPCVOID)((BYTE*)g_assaInfo.base + 0xF507C);
+
+            yposValue = *(DWORD*)dynamicAddress;
+
+            wchar_t buffer[64];
+            swprintf_s(buffer, 64, L"%d", yposValue);
             OverwriteStringInMemory(addr, buffer);
         }},
         {L"#遊戲時間", [](LPCWSTR addr) {
@@ -126,7 +545,7 @@ void ProcessParameterHook(DWORD eax_value) {
                 OverwriteStringInMemory(addr, buffer);
             }
         }},
-        {L"#NPCID", [](LPCWSTR addr) {
+        {L"#npcid", [](LPCWSTR addr) {
             if (!g_saInfo.hProcess || !g_saInfo.base) return;
             DWORD windowState = 0;
             LPCVOID dynamicStateAddr = (LPCVOID)((BYTE*)g_saInfo.base + Addr::WindowStateOffset);
@@ -141,7 +560,7 @@ void ProcessParameterHook(DWORD eax_value) {
             }
  else { OverwriteStringInMemory(addr, L"視窗未開啟"); }
 }},
-{L"#WINID", [](LPCWSTR addr) {
+{L"#winid", [](LPCWSTR addr) {
     if (!g_saInfo.hProcess || !g_saInfo.base) return;
     DWORD windowState = 0;
     LPCVOID dynamicStateAddr = (LPCVOID)((BYTE*)g_saInfo.base + Addr::WindowStateOffset);
@@ -156,9 +575,11 @@ void ProcessParameterHook(DWORD eax_value) {
     }
 else { OverwriteStringInMemory(addr, L"視窗未開啟"); }
 }},
-{L"#EV1", [](LPCWSTR addr) { wchar_t buf[16]; swprintf(buf, 16, L"%d", ev1); OverwriteStringInMemory(addr, buf); }},
-{L"#EV2", [](LPCWSTR addr) { wchar_t buf[16]; swprintf(buf, 16, L"%d", ev2); OverwriteStringInMemory(addr, buf); }},
-{L"#EV3", [](LPCWSTR addr) { wchar_t buf[16]; swprintf(buf, 16, L"%d", ev3); OverwriteStringInMemory(addr, buf); }},
+// 【修正】將 %d 改為 %g 以正確讀取 double 類型的值
+        { L"#ev1", [](LPCWSTR addr) { wchar_t buf[32]; swprintf_s(buf, 32, L"%g", ev1); OverwriteStringInMemory(addr, buf); } },
+        { L"#ev2", [](LPCWSTR addr) { wchar_t buf[32]; swprintf_s(buf, 32, L"%g", ev2); OverwriteStringInMemory(addr, buf); } },
+        { L"#ev3", [](LPCWSTR addr) { wchar_t buf[32]; swprintf_s(buf, 32, L"%g", ev3); OverwriteStringInMemory(addr, buf); } },
+
 {L"#亂數", [](LPCWSTR addr) {
     static std::mt19937 gen(std::random_device{}());
     static std::uniform_int_distribution<> distrib(0, 10);
@@ -167,27 +588,22 @@ else { OverwriteStringInMemory(addr, L"視窗未開啟"); }
     OverwriteStringInMemory(addr, buf);
 }}
     };
-
     auto it = actionMap.find(finalStringAddress);
     if (it != actionMap.end()) {
         it->second(finalStringAddress);
     }
 }
-// 函式: MyParameterHook
-// 功能: 用來跳轉到 ProcessParameterHook 的組合語言 (Assembly) 程式碼。
-// 說明: 這種函式被稱為 "Naked Function"，代表編譯器不會為它產生任何額外的堆疊(stack)操作程式碼。
-//       我們需要手動保存所有暫存器 (pushad/popad)，呼叫 C++ 函式，然後跳轉回原始程式碼。
 __declspec(naked) void MyParameterHook() {
     __asm {
-        lea eax, [ebp - 0x38]   // 取得參數在堆疊上的位址
-        pushad                  // 保存所有通用暫存器
-        push eax                // 將參數位址壓入堆疊，作為C++函式的參數
-        call ProcessParameterHook // 呼叫我們的處理函式
-        pop eax                 // 平衡堆疊
-        popad                   // 恢復所有暫存器
-        push ecx                // 以下是原始被我們覆蓋的程式碼
+        lea eax, [ebp - 0x38]
+        pushad
         push eax
-        jmp gParameterHookReturnAddr // 跳轉回 Assa 的原始執行流程
+        call ProcessParameterHook
+        pop eax
+        popad
+        push ecx
+        push eax
+        jmp gParameterHookReturnAddr
     }
 }
 
@@ -216,15 +632,10 @@ __declspec(naked) void MyButton2Hook() {
 }
 
 // --- Button指令 Hook (謎題) ---
-// 函式: ProcessEcxString
-// 功能: 處理 Assa 的 "Button" 指令，攔截特定字串來觸發自動猜謎。
-// 調用: 由 MyEcxStringHook 呼叫。
 void ProcessEcxString(LPCWSTR stringAddress) {
     if (stringAddress && !IsBadReadPtr(stringAddress, sizeof(wchar_t))) {
         if (wcscmp(stringAddress, L"從心所行之路即是正路") == 0) {
-            // 如果字串相符，就呼叫 RiddleDatabase.cpp 中的 QA 函式來獲取答案。
             std::wstring finalOutput = QA();
-            // 將獲取到的答案寫回記憶體，覆蓋掉原來的字串。
             OverwriteStringInMemory(stringAddress, finalOutput);
         }
     }
@@ -242,15 +653,12 @@ __declspec(naked) void MyEcxStringHook() {
     }
 }
 
-
 // ---Print指令 Hook (計時)---
 void ProcessPrintHook(DWORD edx_value) {
     if (IsBadReadPtr((void*)edx_value, sizeof(LPCWSTR))) return;
     LPCWSTR* pString = (LPCWSTR*)edx_value;
     if (IsBadReadPtr(*pString, sizeof(wchar_t))) return;
-
     LPCWSTR finalStringAddress = *pString;
-
     if (wcscmp(finalStringAddress, L"#0000/00/00 00:00:00") == 0) {
         SYSTEMTIME lt;
         GetLocalTime(&lt);
@@ -265,8 +673,7 @@ void ProcessPrintHook(DWORD edx_value) {
     else if (wcscmp(finalStringAddress, L"#計時停止") == 0) {
         if (scriptTime != 0) {
             time_t endTime = time(NULL);
-            // 只有在 scriptTime 是一個時間戳時才計算差值
-            if (scriptTime > 31536000) { // 避免重複計算
+            if (scriptTime > 31536000) {
                 scriptTime = endTime - scriptTime;
             }
         }
@@ -320,7 +727,6 @@ bool ProcessCommandChain(LPCWSTR keyString, LPCWSTR valueString) {
     if (IsBadReadPtr(keyString, sizeof(wchar_t)) || IsBadReadPtr(valueString, sizeof(wchar_t))) {
         return false;
     }
-
     int valueAsInt;
     try {
         valueAsInt = std::stoi(valueString);
@@ -328,7 +734,6 @@ bool ProcessCommandChain(LPCWSTR keyString, LPCWSTR valueString) {
     catch (const std::exception&) {
         return false;
     }
-
     struct CustomCommandRule {
         std::wstring keyString;
         int minValue;
@@ -336,47 +741,27 @@ bool ProcessCommandChain(LPCWSTR keyString, LPCWSTR valueString) {
         DWORD CheckboxOffset;
         DWORD ValueOffset;
     };
-
     static const std::vector<CustomCommandRule> rules = {
-        //戰鬥設置
-        { L"戰鬥精靈", 0, 5, 0xF61C6, 0xF61C7 },
-        { L"戰鬥精靈人物", 0,101, 0xF61C6, 0xF61F5 },
-        { L"戰鬥精靈寵物", 0,101, 0xF61C6, 0xF61F6 },
-        { L"戰鬥補血", 0, 1, 0xF61C8, 0xF61C8 },
-        { L"戰寵補血", 0, 3, 0xF61C9, 0xF61CA },
-        { L"戰寵補血人物", 0,101, 0xF61C9, 0xF61F9 },
-        { L"戰寵補血寵物", 0,101, 0xF61C9, 0xF61FA },
-        { L"復活精靈", 0, 5, 0xF61FE, 0xF6200 },
-        { L"復活物品", 0, 1, 0xF61FF, 0xF61FF },
-        //一般設置
-        { L"平時精靈", 0,20, 0xF6229, 0xF622A },
-        { L"平時精靈人物", 0,101, 0xF6229, 0xF622B },
-        { L"平時精靈寵物", 0,101, 0xF6229, 0xF622C },
-        { L"平時補血", 0, 1, 0xF622D, 0xF622D },
-        { L"平時技能", 0,26, 0xF6232, 0xF6233 },
-        { L"寵物七技", 0, 1, 0xF6662, 0xF6662 },
-        { L"戰鬥換裝", 0, 1, 0xF6661, 0xF6661 },
-        { L"戰鬥詳情", 0, 1, 0xF6669, 0xF6669 },
-        //資料設定
-        { L"白名單", 0, 1, 0xF53CC, 0xF53CC },
-        { L"黑名單", 0, 1, 0xF53CD, 0xF53CD },
-        { L"郵件白名單", 0, 1, 0xF53B8, 0xF53B8 },
-        { L"自動剔除", 0, 1, 0xF53CE, 0xF53CE },
-        { L"隊員1", 0, 1, 0xF53B9, 0xF53B9 },
-        { L"隊員2", 0, 1, 0xF53BA, 0xF53BA },
-        { L"隊員3", 0, 1, 0xF53BB, 0xF53BB },
-        { L"隊員4", 0, 1, 0xF53BC, 0xF53BC },
-        { L"隊員5", 0, 1, 0xF53BD, 0xF53BD },
+        { L"戰鬥精靈", 0, 5, 0xF61C6, 0xF61C7 }, { L"戰鬥精靈人物", 0,101, 0xF61C6, 0xF61F5 },
+        { L"戰鬥精靈寵物", 0,101, 0xF61C6, 0xF61F6 }, { L"戰鬥補血", 0, 1, 0xF61C8, 0xF61C8 },
+        { L"戰寵補血", 0, 3, 0xF61C9, 0xF61CA }, { L"戰寵補血人物", 0,101, 0xF61C9, 0xF61F9 },
+        { L"戰寵補血寵物", 0,101, 0xF61C9, 0xF61FA }, { L"復活精靈", 0, 5, 0xF61FE, 0xF6200 },
+        { L"復活物品", 0, 1, 0xF61FF, 0xF61FF }, { L"平時精靈", 0,20, 0xF6229, 0xF622A },
+        { L"平時精靈人物", 0,101, 0xF6229, 0xF622B }, { L"平時精靈寵物", 0,101, 0xF6229, 0xF622C },
+        { L"平時補血", 0, 1, 0xF622D, 0xF622D }, { L"平時技能", 0,26, 0xF6232, 0xF6233 },
+        { L"寵物七技", 0, 1, 0xF6662, 0xF6662 }, { L"戰鬥換裝", 0, 1, 0xF6661, 0xF6661 },
+        { L"戰鬥詳情", 0, 1, 0xF6669, 0xF6669 }, { L"白名單", 0, 1, 0xF53CC, 0xF53CC },
+        { L"黑名單", 0, 1, 0xF53CD, 0xF53CD }, { L"郵件白名單", 0, 1, 0xF53B8, 0xF53B8 },
+        { L"自動剔除", 0, 1, 0xF53CE, 0xF53CE }, { L"隊員1", 0, 1, 0xF53B9, 0xF53B9 },
+        { L"隊員2", 0, 1, 0xF53BA, 0xF53BA }, { L"隊員3", 0, 1, 0xF53BB, 0xF53BB },
+        { L"隊員4", 0, 1, 0xF53BC, 0xF53BC }, { L"隊員5", 0, 1, 0xF53BD, 0xF53BD },
     };
-
     HMODULE hMod = GetModuleHandleW(L"Assa8.0B5.exe");
     if (!hMod) return false;
-
     for (const auto& rule : rules) {
         if (rule.keyString == keyString && valueAsInt >= rule.minValue && valueAsInt <= rule.maxValue) {
             BYTE* pCheckbox = (BYTE*)hMod + rule.CheckboxOffset;
             *pCheckbox = (valueAsInt > 0) ? 1 : 0;
-
             if (valueAsInt > 0 && rule.maxValue > 1 && rule.CheckboxOffset != rule.ValueOffset) {
                 BYTE* pValue = (BYTE*)hMod + rule.ValueOffset;
                 *pValue = valueAsInt - 1;
@@ -413,7 +798,6 @@ void ProcessStringCopyHook(LPCWSTR stringAddress) {
         {L"快速戰鬥", L"快速戰斗"}, {L"登入主機", L"登陸主機"}, {L"登入副機", L"登陸副機"},
         {L"登入人物", L"登陸人物"}, {L"自動登入", L"自動登陸"}, {L"腳本延遲", L"腳本延時"},
         {L"戰鬥補氣", L"戰斗補氣"},
-        // 功能取消
         {L"走動遇敵", L"功能取消"}, {L"走動步數", L"功能取消"}, {L"快速遇敵", L"功能取消"},
         {L"快速延遲", L"功能取消"}, {L"自動猜謎", L"功能取消"}
     };
@@ -433,64 +817,83 @@ __declspec(naked) void MyStringCopyHook() {
             jmp gStringCopyHookReturnAddr
     }
 }
+
+// --- Assign 指令 Hook (修正版) ---
+__declspec(naked) void MyAssignHook() {
+    __asm {
+        mov edx , [ebp - 0x01A0]
+        cmp[edx] , 0x00530041
+        jne original_path
+
+        // 保存執行環境
+        pushad
+        // 呼叫 C++ 函式
+        mov eax, offset ProcessAssignStringCommand
+        call eax
+        // 【修正】在 popad 之前，將 EAX 中的返回值暫存到堆疊中
+        // (pushad 會壓入8個暫存器，共32 bytes，所以 esp+32 是 pushad 之前的位置)
+        mov[esp + 32 - 4], eax // 將 eax 存到原 esp 的位置，安全可靠
+        // 恢復所有通用暫存器 (此時 EAX 被舊值覆蓋)
+        popad
+        // 【修正】從堆疊中將我們暫存的返回值，重新取回到 EAX
+        mov eax, [esp - 4]
+        // 現在可以安全地比較返回值了
+        cmp al, 1
+        // 如果成功，跳轉到指定的成功路徑
+        je assign_success
+
+        original_path :
+            // 如果失敗，執行原始被覆蓋的指令
+            mov edx, [ebp - 0x01A0]
+            // 然後跳轉回原始程式碼的下一行
+            jmp gAssignHookReturnAddr
+
+        assign_success :
+            // 使用 push + ret 的方式跳轉
+            push 0x00483E5F
+            ret
+    }
+}
+
 // --- 自動堆疊 (Auto Pile) Hook ---
 void ProcessAutoPile() {
     HMODULE hMod = GetModuleHandleW(L"Assa8.0B5.exe");
     if (!hMod) return;
-    // 取得自動堆疊開關的記憶體位址 (Assa8.0B5.exe+F6668)
     BYTE* switchAddress = (BYTE*)hMod + Addr::AutoPileSwitchOffset;
-    // 判斷開關的值
     if (*switchAddress == 1) {
-        // 如果開關是開啟的 (值為 1)
-        pileCounter++; // 計數器累加
-        // 如果計數器大於 10
+        pileCounter++;
         if (pileCounter > 10) {
-            // 準備 "/pile" 指令的位元組序列
-            const std::vector<BYTE> pileCommand = {
-                0x2F, 0x00, 0x70, 0x00, 0x69, 0x00, 0x6C, 0x00, 0x65, 0x00, 0x00, 0x00
-            };
-            // 將指令寫入記憶體以執行
+            const std::vector<BYTE> pileCommand = { 0x2F, 0x00, 0x70, 0x00, 0x69, 0x00, 0x6C, 0x00, 0x65, 0x00, 0x00, 0x00 };
             WriteCommandToMemory(pileCommand);
-            // 執行堆疊後，將計數器歸零
             pileCounter = 0;
         }
     }
     else {
-        // 如果開關是關閉的 (值為 0 或其他)
-        // 將計數器歸零，確保功能關閉後，下次開啟時不會立即觸發
         pileCounter = 0;
     }
 }
-
 __declspec(naked) void MyAutoPileHook() {
     __asm {
         pushad
         call ProcessAutoPile
         popad
-        mov al,0
+        mov al, 0
         jmp gAutoPileJumpTarget
     }
 }
 
-// -- - 自動發話(Compare) Hook-- -
-// 函式: ShouldDoCustomJump
-// 功能: 判斷目前 Assa 準備發送的訊息是否為我們需要攔截的特殊指令。
-// 說明: 這些指令如果直接發送會沒有效果，需要我們攔截下來並走特殊的處理流程。
-// 調用: 由 MyCompareHook 呼叫。
-// 返回: 1 表示需要攔截，0 表示不需要。
+// --- 自動發話(Compare) Hook ---
 int ShouldDoCustomJump() {
-    LPCWSTR commandString = (LPCWSTR)0x4F53D1; // 這是 Assa 內部存放待發送訊息的記憶體位址
+    LPCWSTR commandString = (LPCWSTR)0x4F53D1;
     if (IsBadReadPtr(commandString, sizeof(wchar_t))) return 0;
-
     static const std::vector<std::wstring> commandsToMatch = {
         L"/status", L"/accompany", L"/eo", L"/offline on", L"/offline off",
-        L"/watch", L"/encount on", L"/encount off", 
+        L"/watch", L"/encount on", L"/encount off",
         L"/pile", L"/pile on", L"/pile off", L"前往冒險者之島"
     };
-
     for (const auto& cmd : commandsToMatch) {
         if (wcscmp(commandString, cmd.c_str()) == 0) {
-            return 1; // 找到匹配的指令
+            return 1;
         }
     }
     return 0;
@@ -498,15 +901,15 @@ int ShouldDoCustomJump() {
 __declspec(naked) void MyCompareHook() {
     __asm {
         pushad
-        call ShouldDoCustomJump // 呼叫C++函式，返回值會在 EAX 暫存器中
-        cmp eax, 1              // 比較返回值是否為 1
+        call ShouldDoCustomJump
+        cmp eax, 1
         popad
-        je do_custom_jump       // 如果是 1 (je = jump if equal)，就跳到我們的特殊處理
-        mov dl, byte ptr ds : [0x4F5442] // 否則，執行原始程式碼
-        jmp gCompareHookReturnAddr      // 然後跳回原流程
+        je do_custom_jump
+        mov dl, byte ptr ds : [0x4F5442]
+        jmp gCompareHookReturnAddr
         do_custom_jump :
-        push 0x004719C4         // 這是特殊處理的跳轉位址，讓 Assa 認為指令已成功發送
-            ret                     // 返回
+        push 0x004719C4
+            ret
     }
 }
 
@@ -514,11 +917,9 @@ __declspec(naked) void MyCompareHook() {
 __declspec(naked) void MyAddEspHook() {
     __asm {
         mov eax, 0x00200020
-        // 使用 rep stosd 來快速清空記憶體
         lea edi, ds: [0x4F53D1]
-        mov ecx, 16 // 16 * 4 = 64 bytes
+        mov ecx, 16
         rep stosd
-
         lea eax, [ebp - 0x7C]
         push edx
         push eax
@@ -527,11 +928,7 @@ __declspec(naked) void MyAddEspHook() {
 }
 
 // --- 公開的總安裝函式 ---
-// 函式: InstallAllHooks
-// 功能: 呼叫所有獨立的 Hook 安裝函式，一次性完成所有功能的掛載。
-// 調用: 由 dllmain.cpp 在 DLL_PROCESS_ATTACH 事件中呼叫。
 void InstallAllHooks() {
-    // 使用新的輔助函式來安裝所有 Hook
     InstallJmpHook(L"Assa8.0B5.exe", Addr::CompareHookOffset, MyCompareHook, 6, (LPVOID*)&gCompareHookReturnAddr);
     InstallJmpHook(L"Assa8.0B5.exe", Addr::AddEspHookOffset, MyAddEspHook, 5, (LPVOID*)&gAddEspHookReturnAddr);
     InstallJmpHook(L"Assa8.0B5.exe", Addr::EcxStringHookOffset, MyEcxStringHook, 5, (LPVOID*)&gEcxStringHookReturnAddr);
@@ -539,11 +936,16 @@ void InstallAllHooks() {
     InstallJmpHook(L"Assa8.0B5.exe", Addr::PrintHookOffset, MyPrintHook, 5, (LPVOID*)&gPrintHookReturnAddr);
     InstallJmpHook(L"Assa8.0B5.exe", Addr::Button2HookOffset, MyButton2Hook, 6, (LPVOID*)&gButton2HookReturnAddr);
     InstallJmpHook(L"Assa8.0B5.exe", Addr::IfitemHookOffset, MyIfitemHook, 6, (LPVOID*)&gIfitemHookReturnAddr);
+    InstallJmpHook(L"Assa8.0B5.exe", Addr::MountHookOffset, MyMountHook, 6, (LPVOID*)&gMountHookReturnAddr);
+    InstallJmpHook(L"Assa8.0B5.exe", Addr::TeamCheckHookOffset, MyTeamCheckHook, 5, (LPVOID*)&gTeamCheckHookReturnAddr);
+    // 【新增】安裝寵物檢查Hook，被覆蓋的原始指令長度為 5 bytes
+    InstallJmpHook(L"Assa8.0B5.exe", Addr::PetCheckHookOffset, MyPetCheckHook, 5, (LPVOID*)&gPetCheckHookReturnAddr);
+    // 【新增】安裝 Assign 指令 Hook，被覆蓋的原始指令長度為 6 bytes
+    InstallJmpHook(L"Assa8.0B5.exe", Addr::AssignHookOffset, MyAssignHook, 6, (LPVOID*)&gAssignHookReturnAddr);
 
     // --- 特殊 Hook 的安裝 ---
     HMODULE hMod = GetModuleHandleW(L"Assa8.0B5.exe");
     if (hMod) {
-        // 部分 Hook 需要在安裝前額外設定跳轉目標位址或取得函式指標
         gCommandChainJumpTarget = (void*)((BYTE*)hMod + Addr::CommandChainJumpTargetOffset);
         InstallJmpHook(L"Assa8.0B5.exe", Addr::CommandChainHookOffset, MyCommandChainHook, 6, (LPVOID*)&gCommandChainHookReturnAddr);
 

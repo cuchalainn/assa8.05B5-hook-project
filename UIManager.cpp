@@ -232,7 +232,7 @@ BOOL CALLBACK FindAndHookControlsProc(HWND hwnd, LPARAM lParam) {
     static const std::vector<std::pair<std::wstring, std::wstring>> mappings = {
         {L"激活石器", L"啟動石器"}, {L"自動KNPC", L"NPC對戰"}, {L"自動戰斗", L"自動戰鬥"},
         {L"快速戰斗", L"快速戰鬥"}, {L"戰斗設定", L"戰鬥設定"}, {L"戰斗設置", L"戰鬥設置"},
-        {L"決斗", L"決鬥"}, {L"合成|料理|精鏈", L"合成|料理|精煉"},{L"腳本制作", L"腳本製作"},
+        {L"決斗", L"決鬥"}, {L"合成|料理|精鏈", L"合成|料理|修復|鑲嵌"},{L"腳本制作", L"腳本製作"},
     };
     for (const auto& map : mappings) {
         if (wcsstr(text, map.first.c_str())) {

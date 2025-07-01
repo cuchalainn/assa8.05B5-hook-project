@@ -15,6 +15,7 @@ struct TargetInfo {
 extern TargetInfo g_assaInfo; // 主控端 (Assa) 的資訊
 extern TargetInfo g_saInfo;   // 目標遊戲 (SA) 的資訊
 
-extern int ev1, ev2, ev3;
+// 【修正】將 ev1, ev2, ev3 的類型從 int 改為 double，以支援小數和負數
+extern double ev1, ev2, ev3;
 extern int pileCounter;
 extern time_t scriptTime;

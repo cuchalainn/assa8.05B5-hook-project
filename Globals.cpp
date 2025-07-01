@@ -8,8 +8,9 @@
 TargetInfo g_assaInfo = { 0, NULL, NULL, NULL };
 TargetInfo g_saInfo = { 0, NULL, NULL, NULL };
 
-int ev1 = 0;
-int ev2 = 0;
-int ev3 = 0;
+// 【修正】將 ev1, ev2, ev3 初始化為 0.0
+double ev1 = 0.0;
+double ev2 = 0.0;
+double ev3 = 0.0;
 int pileCounter = 0;
 time_t scriptTime = 0;

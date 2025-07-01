@@ -32,6 +32,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID lpReserved) {
     switch (reason) {
     case DLL_PROCESS_ATTACH:
     {
+        // 【新增】在DLL載入時，取得並儲存主程式的模組基底位址
+        g_assaInfo.base = GetModuleHandleW(NULL);
+
         DisableThreadLibraryCalls(hModule);
         if (MH_Initialize() != MH_OK) {
             MessageBoxW(NULL, L"MinHook 初始化失敗！", L"嚴重錯誤", MB_OK | MB_ICONERROR);
