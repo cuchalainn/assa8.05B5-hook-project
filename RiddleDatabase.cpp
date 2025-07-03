@@ -2,26 +2,21 @@
 #include "pch.h"
 #include "RiddleDatabase.h"
 #include "Globals.h"
-#include <unordered_map>
-#include <windows.h>
-#include <cstdio>
-#include <algorithm>
-#include <stdexcept>
 
-// 【修正】將命名空間定義移到全域，而不是函式內部
+// 定義猜謎相關的記憶體位址偏移
 namespace Addr_Riddle {
     constexpr DWORD RiddleStringOffset = 0x16982D;
     constexpr DWORD RiddleGuardOffset = 0x169A4D;
     constexpr DWORD RiddleOption1Offset = 0x169A52;
     constexpr DWORD RiddleOption2Offset = 0x169B62;
     constexpr DWORD RiddleOption3Offset = 0x169C72;
-    constexpr DWORD RiddleGuardValue = 0x44A1B0A2;
+    constexpr DWORD RiddleGuardValue = 0x44A1B0A2; // 用於判斷是否為選擇題的標記
 }
 
-// 函式的具體實作
+// 根據問題字串，從靜態資料庫中查找答案
 static std::wstring GetRiddleAnswer(const std::wstring& riddleText) {
     static const std::unordered_map<std::wstring, std::wstring> riddleAnswerMap = {
-        //填空
+        // --- 填空題 ---
         {L" 大的海星和水分多的梨子能做成何種料理？", L"$海星梨"},
         {L" 曬乾的海星跟曬乾的炭可以做成哪種料理？", L"$海星火焰"},
         {L"「充滿原始風味的粽子」之稱的是哪一種料理", L"$原始粽子"},
@@ -64,7 +59,7 @@ static std::wstring GetRiddleAnswer(const std::wstring& riddleText) {
         {L"請寫出可以一次回復全體團員耐久力的精靈咒", L"$恩惠的精靈"},
         {L"薩姆吉爾村長家的料理人名字是？", L"$鮑爾"},
         {L"寵物接龍「？？？」裡的寵物的名字是？「貝", L"$恩摩摩"},
-        //選擇
+        // --- 選擇題 ---
         {L" 「蘋果醬汁牛排」料理的說明文為以下何者?", L" 都是蘋果的牛排"},
         {L" 清澈的鱗是鱗的成分幾呢。", L"鱗的成分4"},
         {L"「○○○○的近藏」那麼○裡面應該是？", L"山賊志願"},
@@ -172,61 +167,51 @@ static std::wstring GetRiddleAnswer(const std::wstring& riddleText) {
         {L"願藏的寵物的名字是?", L"呼拔吉"},
     };
     auto it = riddleAnswerMap.find(riddleText);
-    if (it != riddleAnswerMap.end()) {
-        return it->second;
-    }
-    return L"";
+    return (it != riddleAnswerMap.end()) ? it->second : L"";
 }
-// 【優化】公開函式 QA()
+
+// 公開函式 QA()
 std::wstring QA() {
-    //【優化】直接檢查全域句柄和基底地址，不再需要 PID
+    // 【優化】直接檢查全域句柄和基底地址，更安全高效
     if (!g_saInfo.hProcess || !g_saInfo.base) {
         return L"CANCEL"; // 目標未綁定或句柄無效
     }
 
-    //【優化】不再需要 OpenProcess/CloseHandle，直接使用全域句柄 g_saInfo.hProcess
-
-    std::wstring finalOutput = L"";
     wchar_t unicodeBuffer[256] = { 0 };
     char big5Buffer[256] = { 0 };
     LPCVOID dynamicRiddleAddr = (LPCVOID)((BYTE*)g_saInfo.base + Addr_Riddle::RiddleStringOffset);
 
+    // 【優化】直接使用已開啟的全域句柄 g_saInfo.hProcess
     if (ReadProcessMemory(g_saInfo.hProcess, dynamicRiddleAddr, big5Buffer, sizeof(big5Buffer) - 1, NULL)) {
         MultiByteToWideChar(950, 0, big5Buffer, -1, unicodeBuffer, 256);
         std::wstring correctAnswer = GetRiddleAnswer(unicodeBuffer);
 
         if (!correctAnswer.empty()) {
-            // 如果找到了標準答案，繼續執行選項判斷
-            finalOutput = correctAnswer;
             DWORD guardValue = 0;
             LPCVOID dynamicGuardAddr = (LPCVOID)((BYTE*)g_saInfo.base + Addr_Riddle::RiddleGuardOffset);
-
-            //【優化】繼續使用全域句柄讀取
             ReadProcessMemory(g_saInfo.hProcess, dynamicGuardAddr, &guardValue, sizeof(guardValue), NULL);
 
+            // 如果是選擇題 (有特定標記值)
             if (guardValue == Addr_Riddle::RiddleGuardValue) {
                 auto checkOption = [&](DWORD optionOffset) -> bool {
                     char optBig5[256] = { 0 };
                     wchar_t optUnicode[256] = { 0 };
                     LPCVOID dynamicOptionAddr = (LPCVOID)((BYTE*)g_saInfo.base + optionOffset);
-                    //【優化】繼續使用全域句柄讀取
                     if (ReadProcessMemory(g_saInfo.hProcess, dynamicOptionAddr, optBig5, sizeof(optBig5) - 1, NULL)) {
                         MultiByteToWideChar(950, 0, optBig5, -1, optUnicode, 256);
                         return (correctAnswer == optUnicode);
                     }
                     return false;
                     };
-                if (checkOption(Addr_Riddle::RiddleOption1Offset)) finalOutput = L"1";
-                else if (checkOption(Addr_Riddle::RiddleOption2Offset)) finalOutput = L"2";
-                else if (checkOption(Addr_Riddle::RiddleOption3Offset)) finalOutput = L"3";
+
+                if (checkOption(Addr_Riddle::RiddleOption1Offset)) return L"1";
+                if (checkOption(Addr_Riddle::RiddleOption2Offset)) return L"2";
+                if (checkOption(Addr_Riddle::RiddleOption3Offset)) return L"3";
             }
+            // 如果是填空題，直接返回答案
+            return correctAnswer;
         }
     }
 
-    //【優化】不再需要 CloseHandle
-
-    if (finalOutput.empty()) {
-        return L"CANCEL";
-    }
-    return finalOutput;
+    return L"CANCEL"; // 找不到答案
 }
