@@ -1,5 +1,4 @@
 // 檔案: Globals.h
-// 說明: 統一管理專案所有全域變數和狀態。
 #pragma once
 #include <windows.h>
 #include <time.h>
@@ -13,14 +12,11 @@ struct TargetInfo {
 };
 
 // ========== 全域變數宣告 ==========
-// extern 關鍵字表示這些變數的實體在另一個 .cpp 檔案中 (Globals.cpp)
-// 任何包含了這個標頭檔的檔案都可以存取它們。
-
 extern TargetInfo g_assaInfo; // 主控端 (Assa) 的資訊
 extern TargetInfo g_saInfo;   // 目標遊戲 (SA) 的資訊
 
-// 用於 Assign 指令的自訂變數 (支援小數和負數)
-extern double ev1, ev2, ev3;
+// 【修改】將 ev 變數改為一個包含 10 個 double 的陣列
+extern double ev[10];
 
 // 自動堆疊計數器
 extern int pileCounter;

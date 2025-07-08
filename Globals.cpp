@@ -5,15 +5,11 @@
 
 // ========== 全域變數定義與初始化 ==========
 
-// 初始化結構體，確保程式啟動時有乾淨的初始狀態
 TargetInfo g_assaInfo = { 0, NULL, NULL, NULL };
 TargetInfo g_saInfo = { 0, NULL, NULL, NULL };
 
-// 將 ev 變數初始化為 0.0
-double ev1 = 0.0;
-double ev2 = 0.0;
-double ev3 = 0.0;
+// 【修改】定義一個包含 10 個 double 的陣列，並全部初始化為 0.0
+double ev[10] = { 0.0 };
 
-// 其他計數器和計時器
 int pileCounter = 0;
 time_t scriptTime = 0;

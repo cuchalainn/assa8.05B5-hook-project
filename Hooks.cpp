@@ -74,63 +74,64 @@ void* gCommandChainJumpTarget = nullptr;
 // C++ 核心邏輯函式
 // =================================================================
 // --- 字串處理輔助函式 ---
-static std::string WstringToString(const std::wstring& wstr); // 前置宣告
-static void Trim(std::string& s); // 前置宣告
+static std::string WstringToString(const std::wstring& wstr);
+static void Trim(std::string& s);
 
-// 【修改】函式改名，不再產生檔名，而是提供唯一的 "鍵"
-static std::string GetCurrentCharacterKey() {
+// 【新增】獨立出一個獲取帳號名稱的函式，方便共用
+static std::wstring GetAccountName() {
     if (!g_saInfo.hProcess || !g_saInfo.base) {
-        return "default_character"; // 提供一個預設鍵名
+        return L"UnknownAccount";
     }
 
     char big5Buffer[256] = { 0 };
     wchar_t unicodeBuffer[256] = { 0 };
 
     std::wstring accountName = L"UnknownAccount";
-    std::wstring characterName = L"UnknownChar";
 
-    // 1. 讀取帳號名稱
     LPCVOID accountAddr = (LPCVOID)((BYTE*)g_saInfo.base + Addr::AccountNameOffset);
     if (ReadProcessMemory(g_saInfo.hProcess, accountAddr, big5Buffer, sizeof(big5Buffer) - 1, NULL)) {
         MultiByteToWideChar(950, 0, big5Buffer, -1, unicodeBuffer, 256);
         accountName = unicodeBuffer;
+
         std::wstring suffix = L"www.longzoro.com";
         size_t pos = accountName.rfind(suffix);
         if (pos != std::wstring::npos) {
             accountName.erase(pos, suffix.length());
         }
     }
+    return accountName;
+}
 
-    // 2. 讀取角色名稱
-    memset(big5Buffer, 0, sizeof(big5Buffer));
-    memset(unicodeBuffer, 0, sizeof(unicodeBuffer));
-    LPCVOID charAddr = (LPCVOID)((BYTE*)g_saInfo.base + Addr::CharacterNameOffset);
-    if (ReadProcessMemory(g_saInfo.hProcess, charAddr, big5Buffer, sizeof(big5Buffer) - 1, NULL)) {
-        MultiByteToWideChar(950, 0, big5Buffer, -1, unicodeBuffer, 256);
-        characterName = unicodeBuffer;
+static std::string GetCurrentCharacterKey() {
+    std::wstring accountName = GetAccountName(); // 直接呼叫新函式
+    std::wstring characterName = L"UnknownChar";
+
+    if (g_saInfo.hProcess && g_saInfo.base) {
+        char big5Buffer[256] = { 0 };
+        wchar_t unicodeBuffer[256] = { 0 };
+        LPCVOID charAddr = (LPCVOID)((BYTE*)g_saInfo.base + Addr::CharacterNameOffset);
+        if (ReadProcessMemory(g_saInfo.hProcess, charAddr, big5Buffer, sizeof(big5Buffer) - 1, NULL)) {
+            MultiByteToWideChar(950, 0, big5Buffer, -1, unicodeBuffer, 256);
+            characterName = unicodeBuffer;
+        }
     }
 
-    // 3. 組合唯一的鍵名並返回
     std::wstring fullKeyW = accountName + L"_" + characterName;
     return WstringToString(fullKeyW);
 }
-// --- Assign 指令核心邏輯 (重寫 save/load 部分) ---
+// --- Assign 指令核心邏輯 ---
 static bool ProcessAssignStringCommand(LPCWSTR finalStringAddress) {
     try {
-        if (IsBadReadPtr(finalStringAddress, sizeof(wchar_t))) {
-            return false;
-        }
+        if (IsBadReadPtr(finalStringAddress, sizeof(wchar_t))) return false;
 
         std::wstring fullCommand(finalStringAddress);
         std::wstringstream wss(fullCommand);
         std::vector<std::wstring> parts;
         std::wstring part;
 
-        while (wss >> part) {
-            parts.push_back(part);
-        }
+        while (wss >> part) parts.push_back(part);
 
-        // --- 【重寫】save 和 load 邏輯 ---
+        // --- save 和 load 邏輯 ---
         if (parts.size() == 2 && _wcsicmp(parts[0].c_str(), L"assign") == 0) {
             std::string characterKey = GetCurrentCharacterKey();
             const std::string filename = "ev_vars.txt";
@@ -142,26 +143,22 @@ static bool ProcessAssignStringCommand(LPCWSTR finalStringAddress) {
                 std::string line;
                 bool section_found = false;
 
-                // 讀取整個檔案
                 if (inFile.is_open()) {
-                    while (std::getline(inFile, line)) {
-                        lines.push_back(line);
-                    }
+                    while (std::getline(inFile, line)) lines.push_back(line);
                     inFile.close();
                 }
 
-                std::ofstream outFile(filename, std::ios::trunc); // 清空檔案準備重寫
+                std::ofstream outFile(filename, std::ios::trunc);
                 if (!outFile.is_open()) return false;
 
-                // 尋找並替換現有區塊，或附加新區塊
+                // 【修改】使用迴圈儲存所有 ev 變數
                 for (size_t i = 0; i < lines.size(); ++i) {
                     if (lines[i] == sectionHeader) {
                         section_found = true;
                         outFile << lines[i] << std::endl;
-                        outFile << "ev1=" << ev1 << std::endl;
-                        outFile << "ev2=" << ev2 << std::endl;
-                        outFile << "ev3=" << ev3 << std::endl;
-                        // 跳過舊的 ev 值
+                        for (int j = 0; j < 10; ++j) {
+                            outFile << "ev" << (j + 1) << "=" << ev[j] << std::endl;
+                        }
                         while (i + 1 < lines.size() && !lines[i + 1].empty() && lines[i + 1][0] != '[') {
                             i++;
                         }
@@ -171,12 +168,11 @@ static bool ProcessAssignStringCommand(LPCWSTR finalStringAddress) {
                     }
                 }
 
-                // 如果檔案中沒有該角色的區塊，則在檔案末尾追加
                 if (!section_found) {
                     outFile << sectionHeader << std::endl;
-                    outFile << "ev1=" << ev1 << std::endl;
-                    outFile << "ev2=" << ev2 << std::endl;
-                    outFile << "ev3=" << ev3 << std::endl;
+                    for (int j = 0; j < 10; ++j) {
+                        outFile << "ev" << (j + 1) << "=" << ev[j] << std::endl;
+                    }
                 }
                 outFile.close();
                 return true;
@@ -185,15 +181,13 @@ static bool ProcessAssignStringCommand(LPCWSTR finalStringAddress) {
             else if (_wcsicmp(parts[1].c_str(), L"load") == 0) {
                 std::ifstream inFile(filename);
                 if (!inFile.is_open()) {
-                    // 檔案不存在，重置變數
-                    ev1 = ev2 = ev3 = 0.0;
+                    for (int i = 0; i < 10; ++i) ev[i] = 0.0; // 檔案不存在，重置所有變數
                     return true;
                 }
 
                 std::string line;
                 bool in_correct_section = false;
-                // 預設值，如果找不到則重置
-                ev1 = ev2 = ev3 = 0.0;
+                for (int i = 0; i < 10; ++i) ev[i] = 0.0; // 先預設重置
 
                 while (std::getline(inFile, line)) {
                     Trim(line);
@@ -202,6 +196,7 @@ static bool ProcessAssignStringCommand(LPCWSTR finalStringAddress) {
                         continue;
                     }
                     if (line.empty() || line[0] == '[') {
+                        if (in_correct_section) break; // 已讀完該區塊，可提早結束
                         in_correct_section = false;
                         continue;
                     }
@@ -210,10 +205,16 @@ static bool ProcessAssignStringCommand(LPCWSTR finalStringAddress) {
                         if (delimiter_pos != std::string::npos) {
                             std::string key = line.substr(0, delimiter_pos);
                             std::string value_str = line.substr(delimiter_pos + 1);
-                            double value = std::stod(value_str);
-                            if (key == "ev1") ev1 = value;
-                            else if (key == "ev2") ev2 = value;
-                            else if (key == "ev3") ev3 = value;
+                            // 【修改】解析 ev1 到 ev10
+                            if (key.rfind("ev", 0) == 0) {
+                                try {
+                                    int index = std::stoi(key.substr(2)) - 1;
+                                    if (index >= 0 && index < 10) {
+                                        ev[index] = std::stod(value_str);
+                                    }
+                                }
+                                catch (...) { /* 忽略格式錯誤的行 */ }
+                            }
                         }
                     }
                 }
@@ -222,22 +223,39 @@ static bool ProcessAssignStringCommand(LPCWSTR finalStringAddress) {
             }
         }
 
-        // --- assign evX,=,value 的數值運算邏輯不變 ---
+        // --- assign evX,=,value 的數值運算邏輯 ---
         std::wstringstream wss_numeric(fullCommand);
         std::vector<std::wstring> num_parts;
-        if (std::getline(wss_numeric, part, L' ')) { num_parts.push_back(part); }
+        if (std::getline(wss_numeric, part, L' ')) num_parts.push_back(part);
         if (std::getline(wss_numeric, part, L' ')) {
             std::wstringstream wss_params(part);
-            while (std::getline(wss_params, part, L',')) {
-                num_parts.push_back(part);
-            }
+            while (std::getline(wss_params, part, L',')) num_parts.push_back(part);
         }
         if (num_parts.size() != 4 || _wcsicmp(num_parts[0].c_str(), L"assign") != 0) return false;
+
+        // 【修改】解析 ev 後面的數字，存取陣列
         double* targetVariable = nullptr;
-        if (_wcsicmp(num_parts[1].c_str(), L"ev1") == 0) targetVariable = &ev1;
-        else if (_wcsicmp(num_parts[1].c_str(), L"ev2") == 0) targetVariable = &ev2;
-        else if (_wcsicmp(num_parts[1].c_str(), L"ev3") == 0) targetVariable = &ev3;
-        else return false;
+        std::wstring varName = num_parts[1];
+        if (varName.rfind(L"ev", 0) == 0) {
+            try {
+                int index = std::stoi(varName.substr(2)) - 1;
+                if (index >= 0 && index < 10) {
+                    targetVariable = &ev[index];
+                }
+                else {
+                    return false; // ev 編號超出範圍
+                }
+            }
+            catch (...) {
+                return false; // ev 編號格式錯誤
+            }
+        }
+        else {
+            return false; // 不是 ev 變數
+        }
+
+        if (!targetVariable) return false;
+
         std::wstring valStr = num_parts[3];
         try {
             double value = _wtof(valStr.c_str());
@@ -534,7 +552,7 @@ __declspec(naked) void MyMountHook() {
 }
 
 // --- Let指令 Hook ---
-void ProcessParameterHook(DWORD eax_value) {
+static void ProcessParameterHook(DWORD eax_value) {
     if (IsBadReadPtr((void*)eax_value, sizeof(LPCWSTR))) return;
     LPCWSTR* pString = (LPCWSTR*)eax_value;
     if (IsBadReadPtr(*pString, sizeof(wchar_t))) return;
@@ -542,43 +560,52 @@ void ProcessParameterHook(DWORD eax_value) {
     std::wstring lookupKey(*pString);
     std::transform(lookupKey.begin(), lookupKey.end(), lookupKey.begin(), ::tolower);
 
+    // --- 【修改】重構 actionMap，動態處理 #ev1~10 ---
+    if (lookupKey.rfind(L"#ev", 0) == 0) {
+        try {
+            int index = std::stoi(lookupKey.substr(3)) - 1;
+            if (index >= 0 && index < 10) {
+                wchar_t buf[32];
+                swprintf_s(buf, L"%g", ev[index]);
+                OverwriteStringInMemory(*pString, buf);
+            }
+        }
+        catch (...) { /* 忽略格式錯誤 */ }
+        return; // 處理完畢，直接返回
+    }
+
     static const std::unordered_map<std::wstring, std::function<void(LPCWSTR)>> actionMap = {
         {L"#系統毫秒時間戳00", [](LPCWSTR addr) {
             FILETIME ft_now; GetSystemTimeAsFileTime(&ft_now);
             ULARGE_INTEGER uli_now = { ft_now.dwLowDateTime, ft_now.dwHighDateTime };
             ULONGLONG finalValue = (uli_now.QuadPart / 10000) % 7776000000ULL;
-            wchar_t buffer[64];
-            swprintf_s(buffer, L"%llu", finalValue);
+            wchar_t buffer[64]; swprintf_s(buffer, L"%llu", finalValue);
             OverwriteStringInMemory(addr, buffer);
         }},
         {L"#系統秒數時間戳", [](LPCWSTR addr) {
             FILETIME ft_now; GetSystemTimeAsFileTime(&ft_now);
             ULARGE_INTEGER uli_now = { ft_now.dwLowDateTime, ft_now.dwHighDateTime };
             ULONGLONG finalValue = (uli_now.QuadPart / 10000000) % 7776000ULL;
-            wchar_t buffer[64];
-            swprintf_s(buffer, L"%llu", finalValue);
+            wchar_t buffer[64]; swprintf_s(buffer, L"%llu", finalValue);
             OverwriteStringInMemory(addr, buffer);
         }},
         {L"#xpos", [](LPCWSTR addr) {
             if (!g_assaInfo.base) return;
             DWORD xposValue = *(DWORD*)((BYTE*)g_assaInfo.base + 0xF5078);
-            wchar_t buffer[64];
-            swprintf_s(buffer, L"%d", xposValue);
+            wchar_t buffer[64]; swprintf_s(buffer, L"%d", xposValue);
             OverwriteStringInMemory(addr, buffer);
         }},
         {L"#ypos", [](LPCWSTR addr) {
             if (!g_assaInfo.base) return;
             DWORD yposValue = *(DWORD*)((BYTE*)g_assaInfo.base + 0xF507C);
-            wchar_t buffer[64];
-            swprintf_s(buffer, L"%d", yposValue);
+            wchar_t buffer[64]; swprintf_s(buffer, L"%d", yposValue);
             OverwriteStringInMemory(addr, buffer);
         }},
         {L"#遊戲時間", [](LPCWSTR addr) {
             if (!g_saInfo.hProcess || !g_saInfo.base) return;
             DWORD gameTime = 0;
             if (ReadProcessMemory(g_saInfo.hProcess, (LPCVOID)((BYTE*)g_saInfo.base + Addr::GameTimeOffset), &gameTime, sizeof(gameTime), NULL)) {
-                wchar_t buffer[64];
-                swprintf_s(buffer, L"%u", gameTime);
+                wchar_t buffer[64]; swprintf_s(buffer, L"%u", gameTime);
                 OverwriteStringInMemory(addr, buffer);
             }
         }},
@@ -588,8 +615,7 @@ void ProcessParameterHook(DWORD eax_value) {
             if (ReadProcessMemory(g_saInfo.hProcess, (LPCVOID)((BYTE*)g_saInfo.base + Addr::WindowStateOffset), &windowState, sizeof(windowState), NULL) && windowState == 1) {
                 DWORD finalId = 0;
                 if (ReadProcessMemory(g_saInfo.hProcess, (LPCVOID)((BYTE*)g_saInfo.base + Addr::NpcIdOffset), &finalId, sizeof(finalId), NULL)) {
-                    wchar_t buffer[64];
-                    swprintf_s(buffer, L"%u", finalId);
+                    wchar_t buffer[64]; swprintf_s(buffer, L"%u", finalId);
                     OverwriteStringInMemory(addr, buffer);
                 }
             }
@@ -601,22 +627,22 @@ void ProcessParameterHook(DWORD eax_value) {
     if (ReadProcessMemory(g_saInfo.hProcess, (LPCVOID)((BYTE*)g_saInfo.base + Addr::WindowStateOffset), &windowState, sizeof(windowState), NULL) && windowState == 1) {
         DWORD finalId = 0;
         if (ReadProcessMemory(g_saInfo.hProcess, (LPCVOID)((BYTE*)g_saInfo.base + Addr::WinIdOffset), &finalId, sizeof(finalId), NULL)) {
-            wchar_t buffer[64];
-            swprintf_s(buffer, L"%u", finalId);
+            wchar_t buffer[64]; swprintf_s(buffer, L"%u", finalId);
             OverwriteStringInMemory(addr, buffer);
         }
     }
 else { OverwriteStringInMemory(addr, L"視窗未開啟"); }
 }},
-{ L"#ev1", [](LPCWSTR addr) { wchar_t buf[32]; swprintf_s(buf, L"%g", ev1); OverwriteStringInMemory(addr, buf); } },
-{ L"#ev2", [](LPCWSTR addr) { wchar_t buf[32]; swprintf_s(buf, L"%g", ev2); OverwriteStringInMemory(addr, buf); } },
-{ L"#ev3", [](LPCWSTR addr) { wchar_t buf[32]; swprintf_s(buf, L"%g", ev3); OverwriteStringInMemory(addr, buf); } },
 {L"#亂數", [](LPCWSTR addr) {
     static std::mt19937 gen(std::random_device{}());
     static std::uniform_int_distribution<> distrib(0, 10);
-    wchar_t buf[16];
-    swprintf_s(buf, L"%d", distrib(gen));
+    wchar_t buf[16]; swprintf_s(buf, L"%d", distrib(gen));
     OverwriteStringInMemory(addr, buf);
+}},
+// 【新增】#Account 指令
+{L"#account", [](LPCWSTR addr) {
+    std::wstring accountName = GetAccountName();
+    OverwriteStringInMemory(addr, accountName);
 }}
     };
 
@@ -772,12 +798,12 @@ static bool ProcessCommandChain(LPCWSTR keyString, LPCWSTR valueString) {
         std::wstring keyString; int minValue; int maxValue; DWORD CheckboxOffset; DWORD ValueOffset;
     };
     static const std::vector<CustomCommandRule> rules = {
-        { L"戰鬥精靈", 0, 5, 0xF61C6, 0xF61C7 }, { L"戰鬥精靈人物", 0,101, 0xF61C6, 0xF61F5 },
-        { L"戰鬥精靈寵物", 0,101, 0xF61C6, 0xF61F6 }, { L"戰鬥補血", 0, 1, 0xF61C8, 0xF61C8 },
-        { L"戰寵補血", 0, 3, 0xF61C9, 0xF61CA }, { L"戰寵補血人物", 0,101, 0xF61C9, 0xF61F9 },
-        { L"戰寵補血寵物", 0,101, 0xF61C9, 0xF61FA }, { L"復活精靈", 0, 5, 0xF61FE, 0xF6200 },
+        { L"戰鬥精靈", 0, 5, 0xF61C6, 0xF61C7 }, { L"戰鬥精靈人物", 0,100, 0xF61C6, 0xF61F5 },
+        { L"戰鬥精靈寵物", 0,100, 0xF61C6, 0xF61F6 }, { L"戰鬥補血", 0, 1, 0xF61C8, 0xF61C8 },
+        { L"戰寵補血", 0, 3, 0xF61C9, 0xF61CA }, { L"戰寵補血人物", 0,100, 0xF61C9, 0xF61F9 },
+        { L"戰寵補血寵物", 0,100, 0xF61C9, 0xF61FA }, { L"復活精靈", 0, 5, 0xF61FE, 0xF6200 },
         { L"復活物品", 0, 1, 0xF61FF, 0xF61FF }, { L"平時精靈", 0,20, 0xF6229, 0xF622A },
-        { L"平時精靈人物", 0,101, 0xF6229, 0xF622B }, { L"平時精靈寵物", 0,101, 0xF6229, 0xF622C },
+        { L"平時精靈人物", 0,100, 0xF6229, 0xF622B }, { L"平時精靈寵物", 0,100, 0xF6229, 0xF622C },
         { L"平時補血", 0, 1, 0xF622D, 0xF622D }, { L"平時技能", 0,26, 0xF6232, 0xF6233 },
         { L"寵物七技", 0, 1, 0xF6662, 0xF6662 }, { L"戰鬥換裝", 0, 1, 0xF6661, 0xF6661 },
         { L"戰鬥詳情", 0, 1, 0xF6669, 0xF6669 }, { L"白名單", 0, 1, 0xF53CC, 0xF53CC },
@@ -787,7 +813,6 @@ static bool ProcessCommandChain(LPCWSTR keyString, LPCWSTR valueString) {
         { L"隊員4", 0, 1, 0xF53BC, 0xF53BC }, { L"隊員5", 0, 1, 0xF53BD, 0xF53BD },
     };
 
-    // 【修正】改為使用全域變數 g_assaInfo.base
     HMODULE hMod = g_assaInfo.base;
     if (!hMod) return false;
 
@@ -795,9 +820,19 @@ static bool ProcessCommandChain(LPCWSTR keyString, LPCWSTR valueString) {
         if (rule.keyString == keyString && valueAsInt >= rule.minValue && valueAsInt <= rule.maxValue) {
             BYTE* pCheckbox = (BYTE*)hMod + rule.CheckboxOffset;
             *pCheckbox = (valueAsInt > 0) ? 1 : 0;
+
             if (valueAsInt > 0 && rule.maxValue > 1 && rule.CheckboxOffset != rule.ValueOffset) {
                 BYTE* pValue = (BYTE*)hMod + rule.ValueOffset;
-                *pValue = valueAsInt - 1;
+
+                // 【關鍵修正】根據 maxValue 是否小於 50 來決定是否要減 1
+                if (rule.maxValue < 50) {
+                    // 對於小範圍的下拉選單類型設定 (如精靈、技能)，數值減 1 以對應 0-based 索引
+                    *pValue = valueAsInt - 1;
+                }
+                else {
+                    // 對於大範圍的百分比類型設定 (如血量)，直接使用數值
+                    *pValue = valueAsInt;
+                }
             }
             return true;
         }

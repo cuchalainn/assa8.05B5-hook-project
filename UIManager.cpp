@@ -15,6 +15,9 @@ static HWND g_hWallHack = NULL;
 static HWND g_hAutoRiddle = NULL;
 static HWND g_hTargetParent = NULL;
 static HWND g_hInfoContainer = NULL;
+// 【新增】用於定位的基準點控制代碼
+static HWND g_hAnchorTop = NULL;    // 上方基準點: "加速:10"
+static HWND g_hAnchorBottom = NULL; // 下方基準點: "自動戰鬥" 的父容器
 
 static bool g_isPilingOn = false;
 static bool g_isOfflineOn = false;
@@ -229,6 +232,14 @@ void OnCustomButtonClick(int button_id, HWND hButton) {
 BOOL CALLBACK FindAndHookControlsProc(HWND hwnd, LPARAM) {
     wchar_t text[256] = { 0 };
     GetWindowTextW(hwnd, text, 256);
+    // --- 【修改】在這裡找到並儲存我們的基準點 ---
+    if (g_hAnchorTop == NULL && wcsstr(text, L"加速:")) {
+        g_hAnchorTop = hwnd;
+    }
+    // 我們需要的是「自動戰鬥」按鈕所在的那個"Group Box"容器
+    if (g_hAnchorBottom == NULL && wcscmp(text, L"自動戰斗") == 0) {
+        g_hAnchorBottom = GetParent(hwnd);
+    }
 
     // 尋找一個父容器，用於放置我們的按鈕
     if (g_hTargetParent == NULL && wcsstr(text, L"腳本制作")) {
@@ -299,19 +310,57 @@ void CreateAllButtons() {
         g_hCustomFont = CreateFontW(-MulDiv(85, GetDeviceCaps(GetDC(hButtonParent), LOGPIXELSY), 720), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft JhengHei UI");
     }
 
-    // 主要功能按鈕
-    const int start_x = 5, start_y = 47, btn_w = 100, btn_h = 25, gap_x = 6, gap_y = 6;
-    struct ButtonInfo { int id; const wchar_t* label; POINT pos; };
+    // --- 【關鍵修改】開始：使用動態佈局取代所有固定座標 ---
+
+    // 如果找不到基準點，就使用舊的固定值，避免程式崩潰
+    int start_y = 47;
+    int btn_h = 25;
+    const int gap_y = 5;
+
+    if (g_hAnchorTop && g_hAnchorBottom) {
+        RECT topRect, bottomRect;
+        // 1. 獲取基準點的「螢幕」座標
+        GetWindowRect(g_hAnchorTop, &topRect);
+        GetWindowRect(g_hAnchorBottom, &bottomRect);
+
+        // 2. 將「螢幕」座標轉換為相對於「父容器」的客戶區座標
+        MapWindowPoints(NULL, hButtonParent, (LPPOINT)&topRect, 2);
+        MapWindowPoints(NULL, hButtonParent, (LPPOINT)&bottomRect, 2);
+
+        // 3. 計算可用的垂直空間
+        int top_margin = 4;  // 在"加速"下方留出的間距
+        int bottom_margin = 6; // 在按鈕區和"自動戰鬥"區之間留出的間距
+        start_y = topRect.bottom + top_margin;
+        int available_height = bottomRect.top - start_y - bottom_margin;
+
+        // 4. 根據可用空間計算按鈕高度 (我們有3排按鈕)
+        btn_h = (available_height - (2 * gap_y)) / 3;
+    }
+
+    // X 軸的計算邏輯保持不變
+    RECT parentClientRect;
+    GetClientRect(hButtonParent, &parentClientRect);
+    const int total_padding = 16;
+    const int gap_x = 6;
+    const int available_width = parentClientRect.right - parentClientRect.left - total_padding;
+    const int btn_w = (available_width - gap_x) / 2;
+    const int start_x = parentClientRect.left + (total_padding / 2);
+
+    // 使用最終計算出的動態值來定義按鈕
+    struct ButtonInfo { int id; const wchar_t* label; POINT pos; SIZE size; };
     ButtonInfo buttons[] = {
-        { ID_ENCOUNT_ON, L"開始遇敵", {start_x, start_y} },
-        { ID_ENCOUNT_OFF, L"停止遇敵", {start_x + btn_w + gap_x, start_y} },
-        { ID_ACCOMPANY, L"呼喚野獸", {start_x, start_y + btn_h + gap_y} },
-        { ID_ADVENTURE_GUILD, L"冒險公會", {start_x + btn_w + gap_x, start_y + btn_h + gap_y} },
-        { ID_PILE, L"開啟堆疊", {start_x, start_y + 2 * (btn_h + gap_y)} },
-        { ID_OFFLINE_ON, L"開啟掛機", {start_x + btn_w + gap_x, start_y + 2 * (btn_h + gap_y)} }
+        { ID_ENCOUNT_ON,      L"開始遇敵", {start_x, start_y}, {btn_w, btn_h} },
+        { ID_ENCOUNT_OFF,     L"停止遇敵", {start_x + btn_w + gap_x, start_y}, {btn_w, btn_h} },
+        { ID_ACCOMPANY,       L"呼喚野獸", {start_x, start_y + btn_h + gap_y}, {btn_w, btn_h} },
+        { ID_ADVENTURE_GUILD, L"冒險公會", {start_x + btn_w + gap_x, start_y + btn_h + gap_y}, {btn_w, btn_h} },
+        { ID_PILE,            L"開啟堆疊", {start_x, start_y + 2 * (btn_h + gap_y)}, {btn_w, btn_h} },
+        { ID_OFFLINE_ON,      L"開啟掛機", {start_x + btn_w + gap_x, start_y + 2 * (btn_h + gap_y)}, {btn_w, btn_h} }
     };
+
+    // --- 【關鍵修改】結束 ---
+
     for (const auto& btn : buttons) {
-        HWND hButton = CreateWindowExW(0, L"BUTTON", btn.label, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, btn.pos.x, btn.pos.y, btn_w, btn_h, hButtonParent, (HMENU)btn.id, hInstance, NULL);
+        HWND hButton = CreateWindowExW(0, L"BUTTON", btn.label, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, btn.pos.x, btn.pos.y, btn.size.cx, btn.size.cy, hButtonParent, (HMENU)btn.id, hInstance, NULL);
         if (hButton) { SendMessage(hButton, WM_SETFONT, (WPARAM)g_hCustomFont, TRUE); subclassButton(hButton); }
     }
 
@@ -320,15 +369,31 @@ void CreateAllButtons() {
         if (g_hSnapButtonFont == NULL) {
             g_hSnapButtonFont = CreateFontW(-MulDiv(90, GetDeviceCaps(GetDC(g_hMapDisplayParent), LOGPIXELSY), 720), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft JhengHei UI");
         }
-        HWND hSnapButton = CreateWindowExW(0, L"BUTTON", L"視窗吸附", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, g_mapDisplayRect.left, g_mapDisplayRect.top, 105, 35, g_hMapDisplayParent, (HMENU)ID_WINDOW_SNAP, hInstance, NULL);
+
+        // 從 g_mapDisplayRect 計算動態的寬度和高度
+        int dynamic_width = g_mapDisplayRect.right - g_mapDisplayRect.left;
+        int dynamic_height = g_mapDisplayRect.bottom - g_mapDisplayRect.top;
+
+        HWND hSnapButton = CreateWindowExW(0, L"BUTTON", L"視窗吸附", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            g_mapDisplayRect.left, g_mapDisplayRect.top,
+            dynamic_width, dynamic_height, // 使用動態計算的大小
+            g_hMapDisplayParent, (HMENU)ID_WINDOW_SNAP, hInstance, NULL);
         if (hSnapButton) { SendMessage(hSnapButton, WM_SETFONT, (WPARAM)g_hSnapButtonFont, TRUE); subclassButton(hSnapButton); }
     }
 
     // 子視窗吸附按鈕
     if (g_hHomePageButtonParent && g_hHomePageButton) {
-        g_hChildSnapButton = CreateWindowExW(0, L"BUTTON", L"子窗吸附", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, g_homePageButtonRect.left, g_homePageButtonRect.top, 105, 35, g_hHomePageButtonParent, (HMENU)ID_CHILD_WINDOW_SNAP, hInstance, NULL);
+        // 從 g_homePageButtonRect 計算動態的寬度和高度
+        int dynamic_width = g_homePageButtonRect.right - g_homePageButtonRect.left;
+        int dynamic_height = g_homePageButtonRect.bottom - g_homePageButtonRect.top;
+
+        g_hChildSnapButton = CreateWindowExW(0, L"BUTTON", L"子窗吸附", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            g_homePageButtonRect.left, g_homePageButtonRect.top,
+            dynamic_width, dynamic_height, // 使用動態計算的大小
+            g_hHomePageButtonParent, (HMENU)ID_CHILD_WINDOW_SNAP, hInstance, NULL);
         if (g_hChildSnapButton) { SendMessage(g_hChildSnapButton, WM_SETFONT, (WPARAM)g_hSnapButtonFont, TRUE); subclassButton(g_hChildSnapButton); }
     }
+
 
     // 詩句文字標籤
     if (g_hInfoContainer) {
