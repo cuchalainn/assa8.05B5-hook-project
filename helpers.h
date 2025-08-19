@@ -29,3 +29,6 @@ HWND GetCurrentProcessMainWindow();
 
 // 從 Assa 記憶體中讀取子視窗的句柄
 HWND ReadChildWindowHandle();
+
+// 【修改】宣告一個新的、功能更強的函式，用來一次性讀取 PID 和 HWND
+bool ReadGameHandles();

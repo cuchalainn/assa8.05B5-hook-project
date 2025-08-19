@@ -5,6 +5,8 @@
 
 // ========== 常數定義 ==========
 namespace Addr {
+    // 新增遊戲 HWND 的偏移量
+    constexpr DWORD TargetHwndOffset = 0xF5300;
     // Assa 記憶體中儲存目標石器PID的位址偏移
     constexpr DWORD TargetPidOffset = 0xF5304;
     // Assa 記憶體中用於發送命令的字串位址偏移
@@ -47,11 +49,29 @@ HWND GetMainWindowForProcess(DWORD dwProcessId) {
     return data.hMainWindow;
 }
 
-// 從 Assa 記憶體中讀取目標石器(SA)的 PID
-DWORD ReadSapid() {
-    // 【修正】改為使用在 dllmain 中初始化的全域變數 g_assaInfo.base
-    if (!g_assaInfo.base) return 0;
-    return *((DWORD*)((BYTE*)g_assaInfo.base + Addr::TargetPidOffset));
+// 【關鍵修改】實作新的 ReadGameHandles 函式
+// 這個函式會直接修改全域的 g_saInfo 變數
+bool ReadGameHandles() {
+    // 確保主控端已初始化
+    if (!g_assaInfo.base) return false;
+
+    // 1. 讀取 PID
+    // 從 (主控端基底 + PID偏移) 的位址讀取 DWORD (4-byte)
+    g_saInfo.PID = *((DWORD*)((BYTE*)g_assaInfo.base + Addr::TargetPidOffset));
+
+    // 2. 讀取 HWND
+    // 從 (主控端基底 + HWND偏移) 的位址讀取 HWND (指標大小)
+    g_saInfo.HWND = *((HWND*)((BYTE*)g_assaInfo.base + Addr::TargetHwndOffset));
+
+    // 3. 簡單驗證讀取到的值是否有效
+    if (g_saInfo.PID != 0 && g_saInfo.HWND != NULL && IsWindow(g_saInfo.HWND)) {
+        return true;
+    }
+
+    // 如果任一項無效，則清空並返回失敗
+    g_saInfo.PID = 0;
+    g_saInfo.HWND = NULL;
+    return false;
 }
 
 // 將命令寫入 Assa 的命令記憶體區
